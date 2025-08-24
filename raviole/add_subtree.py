@@ -37,7 +37,7 @@ MODULES = {
     "bluetooth/broadcom": "kernel/google-modules/bluetooth/broadcom",
     "display/common": "kernel/google-modules/display/common",
     "display/samsung": "kernel/google-modules/display/samsung",
-    "edgetpu/abrolhos/drivers/edgetpu": "kernel/google-modules/edgetpu/abrolhos",
+    "edgetpu/abrolhos": "kernel/google-modules/edgetpu/abrolhos",
     "fingerprint/goodix": "kernel/google-modules/fingerprint/goodix",
     "gps/broadcom/bcm47765": "kernel/google-modules/gps/broadcom/bcm47765",
     "gpu": "kernel/google-modules/gpu",
@@ -45,11 +45,12 @@ MODULES = {
     "nfc": "kernel/google-modules/nfc",
     "power/mitigation": "kernel/google-modules/power/mitigation",
     "power/reset": "kernel/google-modules/power/reset",
+    "soc/gs": "kernel/google-modules/soc/gs",
     "radio/samsung/s5300": "kernel/google-modules/radio/samsung/s5300",
     "touch/common": "kernel/google-modules/touch/common",
     "touch/fts": "kernel/google-modules/touch/fts_touch",
     "trusty": "kernel/google-modules/trusty",
-    "uwb/qorvo/dw3000/kernel": "kernel/google-modules/uwb/qorvo/dw3000",
+    "uwb/qorvo/dw3000": "kernel/google-modules/uwb/qorvo/dw3000",
     "video/gchips": "kernel/google-modules/video/gchips",
     "wlan/bcm4389": "kernel/google-modules/wlan/bcmdhd/bcm4389",
 }
@@ -78,24 +79,48 @@ def is_git_repo():
         return False
 
 
-def check_branch_exists(repo_url, branch):
-    """Check if a branch exists in the remote repository."""
+def check_ref_exists(repo_url, ref):
+    """Check if a branch or tag exists in the remote repository."""
     try:
+        # First try to check as a branch
         result = subprocess.run(
-            ["git", "ls-remote", "--heads", repo_url, f"refs/heads/{branch}"],
+            ["git", "ls-remote", "--heads", repo_url, f"refs/heads/{ref}"],
             check=True,
             capture_output=True,
             text=True,
         )
-        return bool(result.stdout.strip())
+        if result.stdout.strip():
+            return True, "branch"
+
+        # If not found as branch, try as a tag
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", repo_url, f"refs/tags/{ref}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout.strip():
+            return True, "tag"
+
+        # If still not found, try without refs prefix (for direct commit hashes)
+        result = subprocess.run(
+            ["git", "ls-remote", repo_url, ref],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout.strip():
+            return True, "commit"
+
+        return False, None
     except subprocess.CalledProcessError:
-        return False
+        return False, None
 
 
-def add_git_subtree(module_name, local_path, repo_url, branch):
+def add_git_subtree(module_name, local_path, repo_url, ref):
     """Add a git subtree for the given module."""
     print(
-        f"Adding subtree for {module_name} into {local_path} from {repo_url} (branch: {branch})..."
+        f"Adding subtree for {module_name} into {local_path} from {repo_url} (ref: {ref})..."
     )
 
     if os.path.isdir(local_path):
@@ -112,7 +137,7 @@ def add_git_subtree(module_name, local_path, repo_url, branch):
                 local_path,
                 "--squash",
                 repo_url,
-                branch,
+                ref,
             ],
             check=True,
         )
@@ -126,7 +151,7 @@ def add_git_subtree(module_name, local_path, repo_url, branch):
 
 
 def process_modules_and_devices(
-    branch,
+    ref,
     modules_filter=None,
     devices_filter=None,
     modules_only=False,
@@ -156,21 +181,23 @@ def process_modules_and_devices(
         if modules_to_process:
             total_count += len(modules_to_process)
             print(
-                f"Processing {len(modules_to_process)} modules from AOSP repository using branch '{branch}'..."
+                f"Processing {len(modules_to_process)} modules from AOSP repository using ref '{ref}'..."
             )
 
             for module_key, repo_name in modules_to_process.items():
                 repo_url = urljoin(REPO_BASE, repo_name)
                 local_path = f"google-modules/{module_key}"
 
-                # Check if branch exists in the repository
-                if not check_branch_exists(repo_url, branch):
-                    print(
-                        f"Warning: Branch '{branch}' not found in {repo_name}. Skipping."
-                    )
+                # Check if ref exists in the repository
+                exists, ref_type = check_ref_exists(repo_url, ref)
+                if not exists:
+                    print(f"Warning: Ref '{ref}' not found in {repo_name}. Skipping.")
                     continue
 
-                if add_git_subtree(module_key, local_path, repo_url, branch):
+                if ref_type:
+                    print(f"Found '{ref}' as {ref_type} in {repo_name}")
+
+                if add_git_subtree(module_key, local_path, repo_url, ref):
                     success_count += 1
 
     # Process devices unless modules_only is specified
@@ -189,21 +216,23 @@ def process_modules_and_devices(
         if devices_to_process:
             total_count += len(devices_to_process)
             print(
-                f"Processing {len(devices_to_process)} devices from AOSP repository using branch '{branch}'..."
+                f"Processing {len(devices_to_process)} devices from AOSP repository using ref '{ref}'..."
             )
 
             for device_key, repo_name in devices_to_process.items():
                 repo_url = urljoin(REPO_BASE, repo_name)
                 local_path = f"google-devices/{device_key}"
 
-                # Check if branch exists in the repository
-                if not check_branch_exists(repo_url, branch):
-                    print(
-                        f"Warning: Branch '{branch}' not found in {repo_name}. Skipping."
-                    )
+                # Check if ref exists in the repository
+                exists, ref_type = check_ref_exists(repo_url, ref)
+                if not exists:
+                    print(f"Warning: Ref '{ref}' not found in {repo_name}. Skipping.")
                     continue
 
-                if add_git_subtree(device_key, local_path, repo_url, branch):
+                if ref_type:
+                    print(f"Found '{ref}' as {ref_type} in {repo_name}")
+
+                if add_git_subtree(device_key, local_path, repo_url, ref):
                     success_count += 1
 
     if total_count == 0:
@@ -213,7 +242,7 @@ def process_modules_and_devices(
     print(f"\nCompleted: {success_count}/{total_count} items processed successfully.")
 
     if success_count < total_count:
-        print("Some items were skipped due to errors or missing branches.")
+        print("Some items were skipped due to errors or missing refs.")
 
 
 def main():
@@ -222,20 +251,21 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s -b android-gs-raviole-6.1-android16
-  %(prog)s --branch main --modules amplifiers/cs35l41,gpu/mali_pixel
-  %(prog)s -b android-16.0.0_r1 -m "display/samsung,touch/common"
-  %(prog)s -b main --devices gs101,raviole
-  %(prog)s -b android-gs-raviole-6.1-android16 --modules-only
-  %(prog)s -b android-gs-6.1 --devices-only
+  %(prog)s android-gs-raviole-6.1-android16
+  %(prog)s main --modules amplifiers/cs35l41,gpu/mali_pixel
+  %(prog)s android-16.0.0_r1 -m "display/samsung,touch/common"
+  %(prog)s android-16-beta-4.1_r0.1 --devices gs101,raviole
+  %(prog)s android-gs-raviole-6.1-android16 --modules-only
+  %(prog)s android-gs-6.1 --devices-only
+  
+  # Using tags (automatically detected):
+  %(prog)s refs/tags/android-16-beta-4.1_r0.1
+  %(prog)s android-16-beta-4.1_r0.1
         """,
     )
 
     parser.add_argument(
-        "-b",
-        "--branch",
-        required=True,
-        help="Branch name to fetch from AOSP repositories",
+        "ref", help="Branch, tag, or commit reference to fetch from AOSP repositories"
     )
 
     parser.add_argument(
@@ -291,6 +321,9 @@ Examples:
             print(f"  {device}")
         sys.exit(0)
 
+    # Determine which ref to use
+    ref = args.ref
+
     # Validate conflicting options
     if args.modules_only and args.devices_only:
         sys.exit("Error: Cannot specify both --modules-only and --devices-only")
@@ -320,7 +353,7 @@ Examples:
                 sys.exit("Error: No valid devices specified.")
 
     process_modules_and_devices(
-        args.branch,
+        ref,
         modules_filter,
         devices_filter,
         args.modules_only,
