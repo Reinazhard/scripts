@@ -49,6 +49,7 @@ MODULES = {
     "radio/samsung/s5300": "kernel/google-modules/radio/samsung/s5300",
     "touch/common": "kernel/google-modules/touch/common",
     "touch/fts": "kernel/google-modules/touch/fts_touch",
+    "touch/sec": "kernel/google-modules/touch/sec_touch",
     "trusty": "kernel/google-modules/trusty",
     "uwb/qorvo/dw3000": "kernel/google-modules/uwb/qorvo/dw3000",
     "video/gchips": "kernel/google-modules/video/gchips",
