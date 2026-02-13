@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Kernel build script for Google Tensor GS101 (Raviole: Pixel 6/6 Pro/6a)
-#
+# Supports Standard and KernelSU build variants
 #
 
 set -euo pipefail
@@ -28,35 +28,52 @@ err() {
 # Build configuration
 #------------------------------------------------------------------------------
 
-KERNEL_DIR="${PWD}"
-OUT_DIR="${KERNEL_DIR}/out"
-BUILD_NUMBER_FILE="${KERNEL_DIR}/.build_number"
+readonly KERNEL_DIR="${PWD}"
+readonly IS_RELEASE="${RELEASE:-0}"
+
+# Configure output directory based on build type
+if [[ "${IS_RELEASE}" == "1" ]]; then
+    readonly OUT_DIR="${KERNEL_DIR}/out-release"
+else
+    readonly OUT_DIR="${KERNEL_DIR}/out"
+fi
+
+readonly BUILD_NUMBER_FILE="${KERNEL_DIR}/.build_number"
+readonly CONFIG_FILE="${OUT_DIR}/.config"
 
 # Device configuration
-ZIPNAME="86hm"
-DEVICE="gs101"
-DEFCONFIG="raviole_defconfig"
+readonly ZIPNAME="86hm"
+readonly DEVICE="gs101"
+readonly DEFCONFIG="raviole_defconfig"
 
 # Build environment
-KBUILD_BUILD_USER="harumajati"
-KBUILD_BUILD_HOST="marcejz"
-export KBUILD_BUILD_USER KBUILD_BUILD_HOST
+export KBUILD_BUILD_USER="harumajati"
+export KBUILD_BUILD_HOST="marcejz"
 
-# Telegram configuration
-CHATID="-1001403511595"
+# Telegram configuration - select channel based on build type
+if [[ "${IS_RELEASE}" == "1" ]]; then
+    readonly CHATID="-1001493260868"
+else
+    readonly CHATID="-1001403511595"
+fi
 
 # Output paths
-IMAGE_PATH="${OUT_DIR}/arch/arm64/boot/Image.lz4"
-DTB_A0="${OUT_DIR}/google-devices/gs101/dts/gs101-a0.dtb"
-DTB_B0="${OUT_DIR}/google-devices/gs101/dts/gs101-b0.dtb"
+readonly IMAGE_PATH="${OUT_DIR}/arch/arm64/boot/Image.lz4"
+readonly DTB_A0="${OUT_DIR}/google-devices/gs101/dts/gs101-a0.dtb"
+readonly DTB_B0="${OUT_DIR}/google-devices/gs101/dts/gs101-b0.dtb"
 
 # AnyKernel3 paths
-AK3_DIR="${KERNEL_DIR}/AnyKernel3"
-AK3_IMAGE="${AK3_DIR}/Image.lz4"
-AK3_DTB="${AK3_DIR}/dtb"
+readonly AK3_DIR="${KERNEL_DIR}/AnyKernel3"
+readonly AK3_IMAGE="${AK3_DIR}/Image.lz4"
+readonly AK3_DTB="${AK3_DIR}/dtb"
+
+# Build timing (global to share across functions)
+BUILD_START=0
+BUILD_END=0
+DIFF=0
 
 #------------------------------------------------------------------------------
-# Build number management (local incremental)
+# Build number management
 #------------------------------------------------------------------------------
 
 get_build_number() {
@@ -68,10 +85,17 @@ get_build_number() {
 }
 
 increment_build_number() {
+    # For release builds, always use build number 1
+    if [[ "${IS_RELEASE}" == "1" ]]; then
+        echo "1"
+        return
+    fi
+
     local current
     current=$(get_build_number)
-    echo $((current + 1)) > "${BUILD_NUMBER_FILE}"
-    echo $((current + 1))
+    local next=$((current + 1))
+    echo "${next}" > "${BUILD_NUMBER_FILE}"
+    echo "${next}"
 }
 
 #------------------------------------------------------------------------------
@@ -82,21 +106,26 @@ setup_environment() {
     export ARCH=arm64
     export token="${TELEGRAM_TOKEN:-}"
 
+    # Spoof kernel build date for release builds
+    if [[ "${IS_RELEASE}" == "1" ]]; then
+        export KBUILD_BUILD_TIMESTAMP="Mon Oct 13 22:28:16 UTC 2025"
+    fi
+
     # Get kernel version
     KERVER=$(make kernelversion)
     export KERVER
 
     # Git information
-    COMMIT_HEAD=$(git log --oneline -1)
+    COMMIT_HEAD=$(git log -n 1 --oneline)
     CI_BRANCH=$(git rev-parse --abbrev-ref HEAD)
     export COMMIT_HEAD CI_BRANCH
 
     # Compiler information
-    if command -v clang &> /dev/null; then
-        KBUILD_COMPILER_STRING=$(clang --version | head -n 1 | sed -e 's/(http[^)]*)//g' -e 's/  */ /g' -e 's/[[:space:]]*$//')
-    else
+    if ! command -v clang &> /dev/null; then
         err "clang not found in PATH"
     fi
+
+    KBUILD_COMPILER_STRING=$(clang --version | head -n 1 | sed -e 's/(http[^)]*)//g' -e 's/  */ /g' -e 's/[[:space:]]*$//')
     export KBUILD_COMPILER_STRING
 
     # Telegram API endpoints
@@ -112,7 +141,12 @@ setup_environment() {
     BUILD_NUMBER=$(increment_build_number)
     export BUILD_NUMBER KBUILD_BUILD_VERSION="${BUILD_NUMBER}"
 
-    msg "Build #${BUILD_NUMBER} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
+    # Display build information
+    if [[ "${IS_RELEASE}" == "1" ]]; then
+        msg "RELEASE Build #${BUILD_NUMBER} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
+    else
+        msg "Build #${BUILD_NUMBER} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
+    fi
     msg "Compiler: ${KBUILD_COMPILER_STRING}"
     msg "Parallel jobs: ${PROCS}"
 }
@@ -125,10 +159,7 @@ tg_post_msg() {
     local message="$1"
     local chat_id="$2"
 
-    if [[ -z "${token}" ]]; then
-        warn "Telegram token not set, skipping notification"
-        return 0
-    fi
+    [[ -z "${token}" ]] && return 0
 
     curl -s -X POST "${BOT_MSG_URL}" \
         -d chat_id="${chat_id}" \
@@ -145,12 +176,9 @@ tg_post_build() {
     local attempt=1
     local wait_time=5
 
-    if [[ -z "${token}" ]]; then
-        warn "Telegram token not set, skipping file upload"
-        return 0
-    fi
+    [[ -z "${token}" ]] && return 0
 
-    msg "Uploading to Telegram (may take a while on slow connections)..."
+    msg "Uploading to Telegram..."
 
     while [[ ${attempt} -le ${max_attempts} ]]; do
         msg "Upload attempt ${attempt}/${max_attempts}..."
@@ -160,8 +188,8 @@ tg_post_build() {
             -F chat_id="${chat_id}" \
             -F "disable_web_page_preview=true" \
             -F "parse_mode=html" \
-            -F caption="${caption} | <code>Build #${BUILD_NUMBER}</code>" \
-            "${BOT_BUILD_URL}"; then
+            -F caption="${caption}" \
+            "${BOT_BUILD_URL}" 2>/dev/null; then
             msg "Upload successful!"
             return 0
         fi
@@ -169,7 +197,7 @@ tg_post_build() {
         if [[ ${attempt} -lt ${max_attempts} ]]; then
             warn "Upload failed, retrying in ${wait_time}s..."
             sleep ${wait_time}
-            wait_time=$((wait_time * 2))  # Exponential backoff
+            wait_time=$((wait_time * 2))
         fi
 
         attempt=$((attempt + 1))
@@ -179,53 +207,92 @@ tg_post_build() {
 }
 
 #------------------------------------------------------------------------------
-# Kernel build function
+# Configuration helpers
 #------------------------------------------------------------------------------
 
-build_kernel() {
-    msg "Starting kernel build..."
+get_config_localversion() {
+    if [[ ! -f "${CONFIG_FILE}" ]]; then
+        echo ""
+        return
+    fi
 
-    # Send build start notification
-    tg_post_msg "<b>🔨 Build #${BUILD_NUMBER} Started</b>%0A\
-<b>Kernel:</b> <code>${KERVER}</code>%0A\
-<b>Device:</b> <code>${DEVICE}</code>%0A\
-<b>Date:</b> <code>$(TZ=Asia/Jakarta date)</code>%0A\
-<b>Compiler:</b> <code>${KBUILD_COMPILER_STRING}</code>%0A\
-<b>Branch:</b> <code>${CI_BRANCH}</code>%0A\
-<b>HEAD:</b> <code>${COMMIT_HEAD}</code>" "${CHATID}"
+    local localversion
+    localversion=$(grep -E '^CONFIG_LOCALVERSION=' "${CONFIG_FILE}" | cut -d'"' -f2)
+    echo "${localversion}"
+}
 
-    # Generate kernel configuration
-    msg "Generating configuration: ${DEFCONFIG}"
-    make -j"${PROCS}" O="${OUT_DIR}" LLVM=1 LLVM_IAS=1 "${DEFCONFIG}"
+set_config_localversion() {
+    local new_localversion="$1"
 
-    # Build kernel image and device trees
-    msg "Building kernel image and device trees..."
+    msg "Appending LOCALVERSION: ${new_localversion}"
+    scripts/config --file "${CONFIG_FILE}" --set-str LOCALVERSION "${new_localversion}"
+}
+
+#------------------------------------------------------------------------------
+# Kernel configuration and build
+#------------------------------------------------------------------------------
+
+configure_kernel() {
+    local variant="$1"
+    local append_suffix="$2"
+
+    msg "Configuring ${variant} kernel..."
+
+    # Generate base configuration
+    make -j"${PROCS}" O="${OUT_DIR}" LLVM=1 LLVM_IAS=1 "${DEFCONFIG}" > /dev/null
+
+    # Apply KernelSU specific config
+    if [[ "${variant}" == "KernelSU" ]]; then
+        msg "Enabling KernelSU features..."
+        scripts/config --file "${CONFIG_FILE}" \
+            -e KSU \
+            -e KSU_THRONE_TRACKER_ALWAYS_THREADED
+    fi
+
+    # Handle LOCALVERSION appending
+    if [[ -n "${append_suffix}" ]]; then
+        local base_localversion
+        base_localversion=$(get_config_localversion)
+        local new_localversion="${base_localversion}${append_suffix}"
+        set_config_localversion "${new_localversion}"
+    fi
+
+    # Finalize configuration
+    make -j"${PROCS}" O="${OUT_DIR}" LLVM=1 LLVM_IAS=1 olddefconfig > /dev/null
+}
+
+compile_kernel() {
+    local variant="$1"
+
+    msg "Compiling ${variant} kernel..."
     BUILD_START=$(date +"%s")
 
     if make -j"${PROCS}" O="${OUT_DIR}" LLVM=1 LLVM_IAS=1; then
         BUILD_END=$(date +"%s")
         DIFF=$((BUILD_END - BUILD_START))
-        msg "Compilation completed in $((DIFF / 60))m $((DIFF % 60))s"
+        msg "${variant} compilation completed in $((DIFF / 60))m $((DIFF % 60))s"
     else
         BUILD_END=$(date +"%s")
         DIFF=$((BUILD_END - BUILD_START))
-        tg_post_msg "<b>❌ Build #${BUILD_NUMBER} failed after $((DIFF / 60))m $((DIFF % 60))s</b>" "${CHATID}"
-        err "Kernel compilation failed"
+        tg_post_msg "<b>❌ ${variant} Build #${BUILD_NUMBER} failed after $((DIFF / 60))m $((DIFF % 60))s</b>" "${CHATID}"
+        err "${variant} kernel compilation failed"
     fi
+}
 
-    # Verify build outputs
+verify_build_outputs() {
+    local variant="$1"
+
     if [[ ! -f "${IMAGE_PATH}" ]]; then
-        tg_post_msg "<b>❌ Build #${BUILD_NUMBER} failed: Image.lz4 not found</b>" "${CHATID}"
+        tg_post_msg "<b>❌ ${variant} Build #${BUILD_NUMBER} failed: Image.lz4 not found</b>" "${CHATID}"
         err "Image.lz4 not found at ${IMAGE_PATH}"
     fi
 
     if [[ ! -f "${DTB_A0}" ]] || [[ ! -f "${DTB_B0}" ]]; then
-        tg_post_msg "<b>❌ Build #${BUILD_NUMBER} failed: DTB files not found</b>" "${CHATID}"
+        tg_post_msg "<b>❌ ${variant} Build #${BUILD_NUMBER} failed: DTB files not found</b>" "${CHATID}"
         err "DTB files not found"
     fi
 
-    msg "Kernel build successful"
-    generate_zip
+    msg "${variant} build outputs verified"
 }
 
 #------------------------------------------------------------------------------
@@ -233,34 +300,32 @@ build_kernel() {
 #------------------------------------------------------------------------------
 
 generate_zip() {
-    msg "Generating flashable zip..."
+    local variant="$1"
+    local zip_suffix="$2"
 
-    # Copy kernel image to AnyKernel3
-    msg "Copying Image.lz4 to AnyKernel3..."
-    cp -v "${IMAGE_PATH}" "${AK3_IMAGE}"
+    msg "Packaging ${variant} flashable zip..."
 
-    # Concatenate DTB files
-    msg "Concatenating DTB files..."
+    # Copy kernel artifacts to AnyKernel3
+    cp "${IMAGE_PATH}" "${AK3_IMAGE}"
     cat "${DTB_A0}" "${DTB_B0}" > "${AK3_DTB}"
 
-    # Create flashable zip
     cd "${AK3_DIR}" || err "Failed to enter AnyKernel3 directory"
 
-    # Clean previous builds
-    rm -f ./*.zip 2>/dev/null || true
+    # Clean previous unsigned zip
+    rm -f unsigned.zip
 
-    msg "Creating zip archive..."
-    zip -r9 "unsigned.zip" . \
-        -x '.git/*' \
-        -x '.github/*' \
-        -x 'README.md' \
-        -x '*.zip' \
-        -x 'zipsigner-3.0.jar'
+    # Create zip archive
+    zip -r9 -q "unsigned.zip" . \
+        -x '*.git*/*' \
+        -x '*.github*/*' \
+        -x '*README.md*' \
+        -x '*.zip*' \
+        -x '*zipsigner-3.0.jar*'
 
-    # Final zip name
-    ZIP_FINAL="${ZIPNAME}-${DEVICE}-b${BUILD_NUMBER}.zip"
+    # Determine final zip name
+    local zip_final="${ZIPNAME}-${DEVICE}-${zip_suffix}-b${BUILD_NUMBER}.zip"
 
-    # Download zipsigner if not present
+    # Download zipsigner if needed
     if [[ ! -f "zipsigner-3.0.jar" ]]; then
         msg "Downloading zipsigner..."
         curl -sLo zipsigner-3.0.jar \
@@ -268,16 +333,83 @@ generate_zip() {
     fi
 
     # Sign the zip
-    msg "Signing zip as ${ZIP_FINAL}..."
-    java -jar zipsigner-3.0.jar unsigned.zip "${ZIP_FINAL}"
+    msg "Signing ${zip_final}..."
+    java -jar zipsigner-3.0.jar unsigned.zip "${zip_final}"
     rm -f unsigned.zip
 
     # Upload to Telegram
-    tg_post_build "${ZIP_FINAL}" "${CHATID}" \
-        "✅ Build completed in $((DIFF / 60))m $((DIFF % 60))s"
+    local caption="✅ ${variant} completed in $((DIFF / 60))m $((DIFF % 60))s | <code>Build #${BUILD_NUMBER}</code>"
+    tg_post_build "${zip_final}" "${CHATID}" "${caption}"
 
-    msg "Build complete: ${AK3_DIR}/${ZIP_FINAL}"
+    msg "Flashable zip: ${AK3_DIR}/${zip_final}"
     cd "${KERNEL_DIR}"
+}
+
+#------------------------------------------------------------------------------
+# Build variant functions
+#------------------------------------------------------------------------------
+
+build_variant() {
+    local variant="$1"
+    local localversion_suffix="$2"
+    local zip_suffix="$3"
+
+    msg "========================================"
+    msg "  ${variant} Variant Build"
+    msg "========================================"
+
+    # Send build start notification
+    local build_title="${variant} Build #${BUILD_NUMBER}"
+    if [[ "${IS_RELEASE}" == "1" ]]; then
+        build_title="${variant} Release Build"
+    fi
+
+    tg_post_msg "<b>${build_title}</b>%0A\
+<b>Variant:</b> <code>${variant}</code>%0A\
+<b>Kernel:</b> <code>${KERVER}</code>%0A\
+<b>Device:</b> <code>${DEVICE}</code>%0A\
+<b>Date:</b> <code>$(TZ=Asia/Jakarta date)</code>%0A\
+<b>Compiler:</b> <code>${KBUILD_COMPILER_STRING}</code>%0A\
+<b>Branch:</b> <code>${CI_BRANCH}</code>%0A\
+<b>HEAD:</b> <code>${COMMIT_HEAD}</code>" "${CHATID}"
+
+    # Build pipeline
+    configure_kernel "${variant}" "${localversion_suffix}"
+    compile_kernel "${variant}"
+    verify_build_outputs "${variant}"
+    generate_zip "${variant}" "${zip_suffix}"
+
+    msg "${variant} build complete"
+}
+
+build_standard() {
+    local zip_suffix
+
+    if [[ "${IS_RELEASE}" == "1" ]]; then
+        zip_suffix="RELEASE"
+    else
+        zip_suffix="TEST"
+    fi
+
+    build_variant "Standard" "" "${zip_suffix}"
+}
+
+build_ksu() {
+    local localversion_suffix=""
+    local zip_suffix
+
+    # Only append -ksu to LOCALVERSION for non-release builds
+    if [[ "${IS_RELEASE}" != "1" ]]; then
+        localversion_suffix="-ksu"
+    fi
+
+    if [[ "${IS_RELEASE}" == "1" ]]; then
+        zip_suffix="ksu-RELEASE"
+    else
+        zip_suffix="ksu-TEST"
+    fi
+
+    build_variant "KernelSU" "${localversion_suffix}" "${zip_suffix}"
 }
 
 #------------------------------------------------------------------------------
@@ -286,14 +418,23 @@ generate_zip() {
 
 main() {
     msg "========================================"
-    msg "  Raviole (Pixel 6/6 Pro/6a) Kernel Build"
+    if [[ "${IS_RELEASE}" == "1" ]]; then
+        msg "  RELEASE BUILD MODE"
+    fi
+    msg "  Raviole Kernel Build System"
+    msg "  Standard + KernelSU Variants"
     msg "========================================"
 
     setup_environment
-    build_kernel
+
+    # Build both variants sequentially
+    build_standard
+    echo ""
+    build_ksu
 
     msg "========================================"
-    msg "  Build #${BUILD_NUMBER} Finished Successfully"
+    msg "  All Builds Completed Successfully"
+    msg "  Build #${BUILD_NUMBER}"
     msg "========================================"
 }
 
