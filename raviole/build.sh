@@ -11,9 +11,9 @@ set -euo pipefail
 # Logging
 #==============================================================================
 
-msg()  { echo -e "\e[1;32m[INFO]\e[0m $*"; }
-warn() { echo -e "\e[1;33m[WARN]\e[0m $*"; }
-err()  { echo -e "\e[1;31m[ERROR]\e[0m $*"; exit 1; }
+msg()  { echo -e "\e[1;32m[*]\e[0m $*"; }
+warn() { echo -e "\e[1;33m[!]\e[0m $*" >&2; }
+err()  { echo -e "\e[1;31m[ERROR]\e[0m $*" >&2; exit 1; }
 
 format_duration() {
     local seconds="$1"
@@ -21,33 +21,74 @@ format_duration() {
 }
 
 #==============================================================================
+# Cleanup trap
+#==============================================================================
+
+cleanup() {
+    local exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+        warn "Build interrupted or failed (exit code: ${exit_code})"
+    fi
+    exit "${exit_code}"
+}
+
+trap cleanup INT TERM EXIT
+
+#==============================================================================
+# Validation
+#==============================================================================
+
+validate_release() {
+    local release="${RELEASE:-0}"
+    if [[ "${release}" != "0" && "${release}" != "1" ]]; then
+        err "RELEASE must be 0 or 1, got: ${release}"
+    fi
+}
+
+validate_toolchain() {
+    msg "Validating toolchain..."
+
+    if ! command -v clang &> /dev/null; then
+        err "clang not found in PATH"
+    fi
+
+    if ! command -v ld.lld &> /dev/null; then
+        err "ld.lld not found in PATH (required for LLVM=1)"
+    fi
+
+    msg "Toolchain validation passed"
+}
+
+#==============================================================================
 # Configuration
 #==============================================================================
 
+# Validate RELEASE early
+validate_release
+
 # Paths
 readonly KERNEL_DIR="${PWD}"
-readonly IS_RELEASE="${RELEASE:-0}"
+RELEASE="${RELEASE:-0}"
 
-if [[ "${IS_RELEASE}" == "1" ]]; then
-    readonly OUT_DIR="${KERNEL_DIR}/out-release"
+if [[ "${RELEASE}" == "1" ]]; then
+    OUT_DIR="${KERNEL_DIR}/out-release"
     readonly CHATID="-1001493260868"
 else
-    readonly OUT_DIR="${KERNEL_DIR}/out"
+    OUT_DIR="${KERNEL_DIR}/out"
     readonly CHATID="-1001403511595"
 fi
 
 readonly BUILD_NUMBER_FILE="${KERNEL_DIR}/.build_number"
-readonly CONFIG_FILE="${OUT_DIR}/.config"
 
 # Device
 readonly ZIPNAME="86hm"
 readonly DEVICE="gs101"
-readonly DEFCONFIG="raviole_defconfig"
+DEFCONFIG="raviole_defconfig"
 
 # Build artifacts
-readonly IMAGE_PATH="${OUT_DIR}/arch/arm64/boot/Image.lz4"
-readonly DTB_A0="${OUT_DIR}/google-devices/gs101/dts/gs101-a0.dtb"
-readonly DTB_B0="${OUT_DIR}/google-devices/gs101/dts/gs101-b0.dtb"
+IMAGE_PATH=""
+DTB_A0=""
+DTB_B0=""
 
 # AnyKernel3
 readonly AK3_DIR="${KERNEL_DIR}/AnyKernel3"
@@ -58,11 +99,21 @@ readonly AK3_DTB="${AK3_DIR}/dtb"
 export KBUILD_BUILD_USER="harumajati"
 export KBUILD_BUILD_HOST="marcejz"
 
-# Common make flags (expanded after PROCS is set in setup_environment)
-MAKE_OPTS=()
-
-# Build timing (shared across build stages)
+# Build timing
 BUILD_DURATION=0
+
+# Will be set during initialization
+ARCH=""
+BUILD_NUMBER=""
+PROCS=""
+KERVER=""
+COMMIT_HEAD=""
+CI_BRANCH=""
+KBUILD_COMPILER_STRING=""
+BOT_MSG_URL=""
+BOT_BUILD_URL=""
+LOCALVERSION=""
+CONFIG_FILE=""
 
 #==============================================================================
 # Build number
@@ -77,8 +128,7 @@ get_build_number() {
 }
 
 increment_build_number() {
-    # Release builds always use build number 1
-    if [[ "${IS_RELEASE}" == "1" ]]; then
+    if [[ "${RELEASE}" == "1" ]]; then
         echo "1"
         return
     fi
@@ -95,54 +145,74 @@ increment_build_number() {
 #==============================================================================
 
 setup_environment() {
-    export ARCH=arm64
+    msg "Setting up build environment..."
+
+    validate_toolchain
+
+    ARCH="arm64"
+    export ARCH
+
     export token="${TELEGRAM_TOKEN:-}"
 
-    # Deterministic build timestamp for release builds
-    if [[ "${IS_RELEASE}" == "1" ]]; then
+    if [[ "${RELEASE}" == "1" ]]; then
         export KBUILD_BUILD_TIMESTAMP="Mon Oct 13 22:28:16 UTC 2025"
     fi
-
-    # Toolchain
-    command -v clang &> /dev/null || err "clang not found in PATH"
 
     KBUILD_COMPILER_STRING=$(clang --version | head -n 1 \
         | sed -e 's/(http[^)]*)//g' -e 's/  */ /g' -e 's/[[:space:]]*$//')
     export KBUILD_COMPILER_STRING
 
-    # Parallelism
-    PROCS=$(nproc --all)
+    if command -v nproc &> /dev/null; then
+        PROCS=$(nproc --all)
+    else
+        PROCS=8
+        warn "nproc not available, defaulting to ${PROCS} jobs"
+    fi
     export PROCS
 
-    # Common make flags, now that PROCS is available
-    MAKE_OPTS=(-j"${PROCS}" O="${OUT_DIR}" LLVM=1 LLVM_IAS=1)
-
-    # Kernel version
     KERVER=$(make kernelversion)
     export KERVER
 
-    # Git metadata
     COMMIT_HEAD=$(git log -n 1 --oneline)
     CI_BRANCH=$(git rev-parse --abbrev-ref HEAD)
     export COMMIT_HEAD CI_BRANCH
 
-    # Telegram endpoints
     BOT_MSG_URL="https://api.telegram.org/bot${token}/sendMessage"
     BOT_BUILD_URL="https://api.telegram.org/bot${token}/sendDocument"
     export BOT_MSG_URL BOT_BUILD_URL
 
-    # Build number
     BUILD_NUMBER=$(increment_build_number)
     export BUILD_NUMBER
 
-    # Summary
-    if [[ "${IS_RELEASE}" == "1" ]]; then
+    # Create output directory
+    mkdir -p "${OUT_DIR}"
+    msg "Output directory: ${OUT_DIR}"
+
+    # Set paths that depend on OUT_DIR
+    CONFIG_FILE="${OUT_DIR}/.config"
+    IMAGE_PATH="${OUT_DIR}/arch/arm64/boot/Image.lz4"
+    DTB_A0="${OUT_DIR}/google-devices/gs101/dts/gs101-a0.dtb"
+    DTB_B0="${OUT_DIR}/google-devices/gs101/dts/gs101-b0.dtb"
+
+    if [[ "${RELEASE}" == "1" ]]; then
         msg "RELEASE Build #${BUILD_NUMBER} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
     else
         msg "Build #${BUILD_NUMBER} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
     fi
     msg "Compiler: ${KBUILD_COMPILER_STRING}"
     msg "Parallel jobs: ${PROCS}"
+}
+
+protect_variables() {
+    readonly ARCH
+    readonly OUT_DIR
+    readonly DEFCONFIG
+    readonly RELEASE
+    readonly BUILD_NUMBER
+    readonly CONFIG_FILE
+    readonly IMAGE_PATH
+    readonly DTB_A0
+    readonly DTB_B0
 }
 
 #==============================================================================
@@ -159,7 +229,7 @@ tg_post_msg() {
         -d chat_id="${chat_id}" \
         -d "disable_web_page_preview=true" \
         -d "parse_mode=html" \
-        -d text="${message}" > /dev/null
+        -d text="${message}" > /dev/null 2>&1 || true
 }
 
 tg_post_build() {
@@ -208,56 +278,63 @@ tg_notify_failure() {
 }
 
 #==============================================================================
-# LOCALVERSION
+# LOCALVERSION (deterministic and immutable)
 #
 # Release builds:  base only, plus "-ksu" for KernelSU variant.
 # Non-release:     base plus "-b<N>", plus "-ksu" for KernelSU variant.
 # BUILD_NUMBER never leaks into LOCALVERSION during release builds.
 #==============================================================================
 
-get_config_localversion() {
-    if [[ ! -f "${CONFIG_FILE}" ]]; then
-        echo ""
-        return
-    fi
-
-    grep -E '^CONFIG_LOCALVERSION=' "${CONFIG_FILE}" | cut -d'"' -f2
-}
-
-set_config_localversion() {
-    local value="$1"
-
-    msg "Setting LOCALVERSION: ${value}"
-    scripts/config --file "${CONFIG_FILE}" --set-str LOCALVERSION "${value}"
-}
-
 compute_localversion() {
     local variant="$1"
-    local base
-    base=$(get_config_localversion)
-
+    local base_version="-86hm"
     local suffix=""
 
-    # KernelSU tag always comes first after the base
     if [[ "${variant}" == "KernelSU" ]]; then
-        suffix="-ksu"
+        suffix="${suffix}-ksu"
     fi
 
-    # Build number tag only for non-release builds
-    if [[ "${IS_RELEASE}" != "1" ]]; then
+    if [[ "${RELEASE}" != "1" ]]; then
         suffix="${suffix}-b${BUILD_NUMBER}"
     fi
 
-    echo "${base}${suffix}"
+    echo "${base_version}${suffix}"
+}
+
+freeze_localversion() {
+    local variant="$1"
+    LOCALVERSION=$(compute_localversion "${variant}")
+    readonly LOCALVERSION
+    msg "LOCALVERSION locked: ${LOCALVERSION}"
 }
 
 #==============================================================================
-# Kernel build helpers
+# Build hygiene
 #==============================================================================
 
-# Wrapper around make with the common flags
+clean_build_environment() {
+    msg "Performing mrproper (full clean)..."
+
+    if ! make O="${OUT_DIR}" mrproper 2>&1 | grep -v "is up to date" || true; then
+        warn "mrproper completed with warnings"
+    fi
+
+    msg "Build environment cleaned"
+}
+
+#==============================================================================
+# Kernel build
+#==============================================================================
+
 make_kernel() {
-    make "${MAKE_OPTS[@]}" "$@"
+    make -j"${PROCS}" \
+        O="${OUT_DIR}" \
+        ARCH="${ARCH}" \
+        LLVM=1 \
+        LLVM_IAS=1 \
+        LOCALVERSION="${LOCALVERSION}" \
+        KBUILD_BUILD_VERSION="${BUILD_NUMBER}" \
+        "$@"
 }
 
 configure_kernel() {
@@ -265,29 +342,34 @@ configure_kernel() {
 
     msg "Configuring ${variant} kernel..."
 
-    # Generate base defconfig
-    make_kernel "${DEFCONFIG}" > /dev/null
-
-    # KernelSU-specific config options
-    if [[ "${variant}" == "KernelSU" ]]; then
-        msg "Enabling KernelSU features..."
-        scripts/config --file "${CONFIG_FILE}" \
-            -e KSU \
-            -e KSU_THRONE_TRACKER_ALWAYS_THREADED
+    if ! make_kernel "${DEFCONFIG}" > /dev/null 2>&1; then
+        tg_notify_failure "${variant}" "defconfig generation failed"
+        err "Failed to generate ${DEFCONFIG}"
     fi
 
-    # Apply computed LOCALVERSION
-    set_config_localversion "$(compute_localversion "${variant}")"
+    if [[ "${variant}" == "KernelSU" ]]; then
+        msg "Enabling KernelSU features..."
+        if ! scripts/config --file "${CONFIG_FILE}" \
+            -e KSU \
+            -e KSU_THRONE_TRACKER_ALWAYS_THREADED; then
+            tg_notify_failure "${variant}" "KernelSU config failed"
+            err "Failed to enable KernelSU features"
+        fi
+    fi
 
-    # Finalize config
-    make_kernel olddefconfig > /dev/null
+    if ! make_kernel olddefconfig > /dev/null 2>&1; then
+        tg_notify_failure "${variant}" "olddefconfig failed"
+        err "Failed to finalize configuration"
+    fi
+
+    msg "Configuration complete"
 }
 
 compile_kernel() {
     local variant="$1"
     local start end
 
-    msg "Compiling ${variant} kernel..."
+    msg "Building ${variant} kernel..."
     start=$(date +"%s")
 
     if make_kernel; then
@@ -304,6 +386,8 @@ compile_kernel() {
 
 verify_build_outputs() {
     local variant="$1"
+
+    msg "Verifying build outputs..."
 
     if [[ ! -f "${IMAGE_PATH}" ]]; then
         tg_notify_failure "${variant}" "Image.lz4 not found"
@@ -329,29 +413,48 @@ generate_zip() {
 
     msg "Packaging ${variant} flashable zip..."
 
-    cp "${IMAGE_PATH}" "${AK3_IMAGE}"
-    cat "${DTB_A0}" "${DTB_B0}" > "${AK3_DTB}"
+    if ! cp "${IMAGE_PATH}" "${AK3_IMAGE}"; then
+        tg_notify_failure "${variant}" "failed to copy kernel image"
+        err "Failed to copy Image.lz4 to AnyKernel3"
+    fi
+
+    if ! cat "${DTB_A0}" "${DTB_B0}" > "${AK3_DTB}"; then
+        tg_notify_failure "${variant}" "failed to concatenate DTBs"
+        err "Failed to create DTB file"
+    fi
 
     cd "${AK3_DIR}" || err "Failed to enter AnyKernel3 directory"
 
     rm -f unsigned.zip
 
-    zip -r9 -q "unsigned.zip" . \
+    if ! zip -r9 -q "unsigned.zip" . \
         -x '*.git*/*' \
         -x '*.github*/*' \
         -x '*README.md*' \
         -x '*.zip*' \
-        -x '*zipsigner-3.0.jar*'
+        -x '*zipsigner-3.0.jar*'; then
+        cd "${KERNEL_DIR}"
+        tg_notify_failure "${variant}" "zip creation failed"
+        err "Failed to create unsigned zip"
+    fi
 
-    # Fetch zipsigner on first use
     if [[ ! -f "zipsigner-3.0.jar" ]]; then
         msg "Downloading zipsigner..."
-        curl -sLo zipsigner-3.0.jar \
-            "https://raw.githubusercontent.com/raphielscape/scripts/master/zipsigner-3.0.jar"
+        if ! curl -sLo zipsigner-3.0.jar \
+            "https://raw.githubusercontent.com/raphielscape/scripts/master/zipsigner-3.0.jar"; then
+            cd "${KERNEL_DIR}"
+            tg_notify_failure "${variant}" "zipsigner download failed"
+            err "Failed to download zipsigner"
+        fi
     fi
 
     msg "Signing ${zip_final}..."
-    java -jar zipsigner-3.0.jar unsigned.zip "${zip_final}"
+    if ! java -jar zipsigner-3.0.jar unsigned.zip "${zip_final}" 2>&1 | grep -v "^$"; then
+        cd "${KERNEL_DIR}"
+        tg_notify_failure "${variant}" "zip signing failed"
+        err "Failed to sign zip"
+    fi
+
     rm -f unsigned.zip
 
     local caption="✅ ${variant} completed in $(format_duration ${BUILD_DURATION}) | <code>Build #${BUILD_NUMBER}</code>"
@@ -373,9 +476,10 @@ build_variant() {
     msg "  ${variant} Variant Build"
     msg "========================================"
 
-    # Build start notification
+    freeze_localversion "${variant}"
+
     local build_title="${variant} Build #${BUILD_NUMBER}"
-    if [[ "${IS_RELEASE}" == "1" ]]; then
+    if [[ "${RELEASE}" == "1" ]]; then
         build_title="${variant} Release Build"
     fi
 
@@ -388,6 +492,7 @@ build_variant() {
 <b>Branch:</b> <code>${CI_BRANCH}</code>%0A\
 <b>HEAD:</b> <code>${COMMIT_HEAD}</code>" "${CHATID}"
 
+    clean_build_environment
     configure_kernel "${variant}"
     compile_kernel "${variant}"
     verify_build_outputs "${variant}"
@@ -399,7 +504,7 @@ build_variant() {
 zip_suffix_for() {
     local tag="$1"
 
-    if [[ "${IS_RELEASE}" == "1" ]]; then
+    if [[ "${RELEASE}" == "1" ]]; then
         echo "${tag}RELEASE"
     else
         echo "${tag}TEST"
@@ -420,7 +525,7 @@ build_ksu() {
 
 main() {
     msg "========================================"
-    if [[ "${IS_RELEASE}" == "1" ]]; then
+    if [[ "${RELEASE}" == "1" ]]; then
         msg "  RELEASE BUILD MODE"
     fi
     msg "  Raviole Kernel Build System"
@@ -428,6 +533,7 @@ main() {
     msg "========================================"
 
     setup_environment
+    protect_variables
 
     build_standard
     echo ""
