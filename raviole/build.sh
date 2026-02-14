@@ -78,7 +78,7 @@ else
     readonly CHATID="-1001403511595"
 fi
 
-readonly BUILD_NUMBER_FILE="${KERNEL_DIR}/.build_number"
+readonly KERNEL_BUILD_NUM_FILE="${KERNEL_DIR}/.kernel_build_num"
 
 # Device
 readonly ZIPNAME="86hm"
@@ -104,7 +104,7 @@ BUILD_DURATION=0
 
 # Will be set during initialization
 ARCH=""
-BUILD_NUMBER=""
+KERNEL_BUILD_NUM=""
 PROCS=""
 KERVER=""
 COMMIT_HEAD=""
@@ -119,24 +119,19 @@ CONFIG_FILE=""
 # Build number
 #==============================================================================
 
-get_build_number() {
-    if [[ -f "${BUILD_NUMBER_FILE}" ]]; then
-        cat "${BUILD_NUMBER_FILE}"
+get_kernel_build_num() {
+    if [[ -f "${KERNEL_BUILD_NUM_FILE}" ]]; then
+        cat "${KERNEL_BUILD_NUM_FILE}"
     else
         echo "0"
     fi
 }
 
-increment_build_number() {
-    if [[ "${RELEASE}" == "1" ]]; then
-        echo "1"
-        return
-    fi
-
+increment_kernel_build_num() {
     local current next
-    current=$(get_build_number)
+    current=$(get_kernel_build_num)
     next=$((current + 1))
-    echo "${next}" > "${BUILD_NUMBER_FILE}"
+    echo "${next}" > "${KERNEL_BUILD_NUM_FILE}"
     echo "${next}"
 }
 
@@ -181,8 +176,16 @@ setup_environment() {
     BOT_BUILD_URL="https://api.telegram.org/bot${token}/sendDocument"
     export BOT_MSG_URL BOT_BUILD_URL
 
-    BUILD_NUMBER=$(increment_build_number)
-    export BUILD_NUMBER
+    # KERNEL_BUILD_NUM is only used for non-release builds
+    if [[ "${RELEASE}" == "1" ]]; then
+        KERNEL_BUILD_NUM="1"
+    else
+        KERNEL_BUILD_NUM=$(increment_kernel_build_num)
+    fi
+    export KERNEL_BUILD_NUM
+
+    # Unset BUILD_NUMBER to prevent scripts/setlocalversion from using it
+    unset BUILD_NUMBER
 
     # Create output directory
     mkdir -p "${OUT_DIR}"
@@ -195,9 +198,9 @@ setup_environment() {
     DTB_B0="${OUT_DIR}/google-devices/gs101/dts/gs101-b0.dtb"
 
     if [[ "${RELEASE}" == "1" ]]; then
-        msg "RELEASE Build #${BUILD_NUMBER} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
+        msg "RELEASE Build | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
     else
-        msg "Build #${BUILD_NUMBER} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
+        msg "Build #${KERNEL_BUILD_NUM} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
     fi
     msg "Compiler: ${KBUILD_COMPILER_STRING}"
     msg "Parallel jobs: ${PROCS}"
@@ -208,7 +211,7 @@ protect_variables() {
     readonly OUT_DIR
     readonly DEFCONFIG
     readonly RELEASE
-    readonly BUILD_NUMBER
+    readonly KERNEL_BUILD_NUM
     readonly CONFIG_FILE
     readonly IMAGE_PATH
     readonly DTB_A0
@@ -274,7 +277,12 @@ tg_notify_failure() {
     local variant="$1"
     local reason="$2"
 
-    tg_post_msg "<b>❌ ${variant} Build #${BUILD_NUMBER} failed: ${reason}</b>" "${CHATID}"
+    local build_label="Build"
+    if [[ "${RELEASE}" != "1" ]]; then
+        build_label="Build #${KERNEL_BUILD_NUM}"
+    fi
+
+    tg_post_msg "<b>❌ ${variant} ${build_label} failed: ${reason}</b>" "${CHATID}"
 }
 
 #==============================================================================
@@ -287,7 +295,6 @@ tg_notify_failure() {
 
 compute_localversion() {
     local variant="$1"
-    local base_version="-86hm"
     local suffix=""
 
     if [[ "${variant}" == "KernelSU" ]]; then
@@ -295,10 +302,10 @@ compute_localversion() {
     fi
 
     if [[ "${RELEASE}" != "1" ]]; then
-        suffix="${suffix}-b${BUILD_NUMBER}"
+        suffix="${suffix}-b${KERNEL_BUILD_NUM}"
     fi
 
-    echo "${base_version}${suffix}"
+    echo "${suffix}"
 }
 
 freeze_localversion() {
@@ -313,13 +320,16 @@ freeze_localversion() {
 #==============================================================================
 
 clean_build_environment() {
-    msg "Performing mrproper (full clean)..."
+    # Only perform mrproper for release builds to ensure pristine state
+    if [[ "${RELEASE}" == "1" ]]; then
+        msg "Performing mrproper (full clean)..."
 
-    if ! make O="${OUT_DIR}" mrproper 2>&1 | grep -v "is up to date" || true; then
-        warn "mrproper completed with warnings"
+        if ! make O="${OUT_DIR}" mrproper 2>&1 | grep -v "is up to date" || true; then
+            warn "mrproper completed with warnings"
+        fi
+
+        msg "Build environment cleaned"
     fi
-
-    msg "Build environment cleaned"
 }
 
 #==============================================================================
@@ -333,7 +343,7 @@ make_kernel() {
         LLVM=1 \
         LLVM_IAS=1 \
         LOCALVERSION="${LOCALVERSION}" \
-        KBUILD_BUILD_VERSION="${BUILD_NUMBER}" \
+        KBUILD_BUILD_VERSION="${KERNEL_BUILD_NUM}" \
         "$@"
 }
 
@@ -409,7 +419,7 @@ verify_build_outputs() {
 generate_zip() {
     local variant="$1"
     local zip_suffix="$2"
-    local zip_final="${ZIPNAME}-${DEVICE}-${zip_suffix}-b${BUILD_NUMBER}.zip"
+    local zip_final="${ZIPNAME}-${DEVICE}-${zip_suffix}-b${KERNEL_BUILD_NUM}.zip"
 
     msg "Packaging ${variant} flashable zip..."
 
@@ -457,7 +467,12 @@ generate_zip() {
 
     rm -f unsigned.zip
 
-    local caption="✅ ${variant} completed in $(format_duration ${BUILD_DURATION}) | <code>Build #${BUILD_NUMBER}</code>"
+    local build_info="Build #${KERNEL_BUILD_NUM}"
+    if [[ "${RELEASE}" == "1" ]]; then
+        build_info="Release"
+    fi
+
+    local caption="✅ ${variant} completed in $(format_duration ${BUILD_DURATION}) | <code>${build_info}</code>"
     tg_post_build "${zip_final}" "${CHATID}" "${caption}"
 
     msg "Flashable zip: ${AK3_DIR}/${zip_final}"
@@ -478,9 +493,11 @@ build_variant() {
 
     freeze_localversion "${variant}"
 
-    local build_title="${variant} Build #${BUILD_NUMBER}"
+    local build_title
     if [[ "${RELEASE}" == "1" ]]; then
         build_title="${variant} Release Build"
+    else
+        build_title="${variant} Build #${KERNEL_BUILD_NUM}"
     fi
 
     tg_post_msg "<b>${build_title}</b>%0A\
@@ -541,7 +558,9 @@ main() {
 
     msg "========================================"
     msg "  All Builds Completed Successfully"
-    msg "  Build #${BUILD_NUMBER}"
+    if [[ "${RELEASE}" != "1" ]]; then
+        msg "  Build #${KERNEL_BUILD_NUM}"
+    fi
     msg "========================================"
 }
 
