@@ -78,7 +78,7 @@ else
     readonly CHATID="-1001403511595"
 fi
 
-readonly KERNEL_BUILD_NUM_FILE="${KERNEL_DIR}/.kernel_build_num"
+readonly KERNEL_BUILD_NUM_FILE="${KERNEL_DIR}/.build_number"
 
 # Device
 readonly ZIPNAME="86hm"
@@ -186,6 +186,11 @@ setup_environment() {
 
     # Unset BUILD_NUMBER to prevent scripts/setlocalversion from using it
     unset BUILD_NUMBER
+
+    # Set BUILD_NUMBER for test builds Only
+    if [[ "${RELEASE}" != "1" ]]; then
+        export BUILD_NUMBER="${KERNEL_BUILD_NUM}"
+    fi
 
     # Create output directory
     mkdir -p "${OUT_DIR}"
