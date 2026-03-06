@@ -47,6 +47,12 @@ export KBUILD_BUILD_HOST="marcejz"
 readonly AK3_DIR="${KERNEL_DIR}/AnyKernel3"
 readonly AK3_IMAGE="${AK3_DIR}/Image.lz4"
 readonly AK3_DTB="${AK3_DIR}/dtb"
+readonly AK3_DTBO="${AK3_DIR}/dtbo.img"
+
+# mkdtimg configuration
+# shellcheck disable=SC2034
+readonly MKDTIMG_URL="https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/utility/mkdtimg/mkdtimg"
+readonly MKDTIMG_FLAGS="--page_size=4096 --id=/:board_id --rev=/:board_rev"
 
 # Release mode: 0 = test, 1 = release
 RELEASE="${RELEASE:-0}"
@@ -130,11 +136,12 @@ setup_environment() {
     export KERVER COMMIT_HEAD CI_BRANCH
 
     # Build number handling
-    unset BUILD_NUMBER
     if [[ "${RELEASE}" == "1" ]]; then
         KERNEL_BUILD_NUM="1"
+        unset BUILD_NUMBER
     else
         KERNEL_BUILD_NUM=$(increment_build_num)
+        unset BUILD_NUMBER
     fi
     export KERNEL_BUILD_NUM
 
@@ -305,6 +312,42 @@ verify_build_outputs() {
 }
 
 #==============================================================================
+# dtbo generation
+#==============================================================================
+
+generate_dtbo() {
+    local variant="$1"
+    msg "Generating dtbo.img..."
+
+    if [[ ! -x "${KERNEL_DIR}/mkdtimg" ]]; then
+        msg "Downloading mkdtimg..."
+        curl -sLo "${KERNEL_DIR}/mkdtimg" "${MKDTIMG_URL}" || {
+            tg_notify_failure "${variant}" "mkdtimg download failed"
+            err "Failed to download mkdtimg"
+        }
+        chmod +x "${KERNEL_DIR}/mkdtimg"
+    fi
+
+    local dtbo_files
+    # shellcheck disable=SC2207
+    dtbo_files=( $(find "${OUT_DIR}" -name 'gs*.dtbo' | sort) )
+
+    [[ ${#dtbo_files[@]} -eq 0 ]] && {
+        tg_notify_failure "${variant}" "no dtbo files found"
+        err "No gs*.dtbo files found in ${OUT_DIR}"
+    }
+
+    cd "${KERNEL_DIR}"
+    # shellcheck disable=SC2086
+    ./mkdtimg create dtbo.img ${MKDTIMG_FLAGS} "${dtbo_files[@]}" || {
+        tg_notify_failure "${variant}" "dtbo.img generation failed"
+        err "Failed to generate dtbo.img"
+    }
+
+    msg "dtbo.img generated (${#dtbo_files[@]} dtbo file(s))"
+}
+
+#==============================================================================
 # Packaging
 #==============================================================================
 
@@ -338,6 +381,11 @@ generate_zip() {
     cat "${DTB_A0}" "${DTB_B0}" > "${AK3_DTB}" || {
         tg_notify_failure "${variant}" "failed to concatenate DTBs"
         err "Failed to create DTB file"
+    }
+
+    cp "${KERNEL_DIR}/dtbo.img" "${AK3_DTBO}" || {
+        tg_notify_failure "${variant}" "failed to copy dtbo.img"
+        err "Failed to copy dtbo.img to AnyKernel3"
     }
 
     cd "${AK3_DIR}" || err "Failed to enter AnyKernel3 directory"
@@ -425,7 +473,13 @@ build_variant() {
     configure_kernel "${variant}"
     compile_kernel "${variant}"
     verify_build_outputs "${variant}"
+    generate_dtbo "${variant}"
     generate_zip "${variant}" "${zip_suffix}"
+
+    # Clean up dtbo artifacts to prevent stale files in subsequent builds
+    msg "Cleaning up dtbo artifacts..."
+    find "${OUT_DIR}" -name 'gs*.dtbo' -delete
+    rm -f "${KERNEL_DIR}/dtbo.img"
 
     msg "${variant} build complete"
 }
