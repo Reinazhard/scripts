@@ -130,12 +130,11 @@ setup_environment() {
     export KERVER COMMIT_HEAD CI_BRANCH
 
     # Build number handling
+    unset BUILD_NUMBER
     if [[ "${RELEASE}" == "1" ]]; then
         KERNEL_BUILD_NUM="1"
-        unset BUILD_NUMBER
     else
         KERNEL_BUILD_NUM=$(increment_build_num)
-        export BUILD_NUMBER="${KERNEL_BUILD_NUM}"
     fi
     export KERNEL_BUILD_NUM
 
@@ -215,7 +214,7 @@ tg_notify_failure() {
 compute_localversion() {
     local variant="$1"
     local lv=""
-    [[ "${variant}" == "KernelSU" ]] && lv="-ksu"
+    [[ "${variant}" == "KernelSU" ]] && lv="-ybrt"
     [[ "${RELEASE}" != "1" ]] && lv="${lv}-b${KERNEL_BUILD_NUM}"
     echo "${lv}"
 }
