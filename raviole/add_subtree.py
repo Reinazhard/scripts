@@ -118,8 +118,8 @@ def check_ref_exists(repo_url, ref):
         return False, None
 
 
-def add_git_subtree(module_name, local_path, repo_url, ref):
-    """Add a git subtree for the given module."""
+def import_via_subtree(module_name, local_path, repo_url, ref):
+    """Import module using git subtree from remote repository."""
     print(
         f"Adding subtree for {module_name} into {local_path} from {repo_url} (ref: {ref})..."
     )
@@ -151,24 +151,63 @@ def add_git_subtree(module_name, local_path, repo_url, ref):
         return False
 
 
+def import_via_copy(module_name, source_path, dest_path, force=False):
+    """Import module by copying from local source directory."""
+    import shutil
+
+    if not os.path.isdir(source_path):
+        print(f"Warning: Source directory {source_path} not found. Skipping {module_name}.")
+        return False
+
+    if os.path.exists(dest_path):
+        if not force:
+            print(f"Error: Destination {dest_path} already exists. Use --force to overwrite.")
+            sys.exit(1)
+        else:
+            print(f"Removing existing {dest_path}...")
+            shutil.rmtree(dest_path)
+
+    try:
+        print(f"Copying {module_name} from {source_path} to {dest_path}...")
+        shutil.copytree(source_path, dest_path)
+        print(f"Successfully copied {module_name}")
+        return True
+    except Exception as e:
+        print(f"Error: Failed to copy {module_name}. Error: {e}")
+        return False
+
+
 def process_modules_and_devices(
-    ref,
+    ref=None,
     modules_filter=None,
     devices_filter=None,
     modules_only=False,
     devices_only=False,
+    import_method="subtree",
+    source_dir=None,
+    force=False,
 ):
-    """Process and add git subtrees for specified modules and devices."""
+    """Process and import modules and devices using specified method."""
 
-    if not is_git_repo():
-        sys.exit("Error: Not inside a git repository.")
+    # Validate import method
+    if import_method == "subtree":
+        if not is_git_repo():
+            sys.exit("Error: Subtree mode requires a git repository.")
+        if not ref:
+            sys.exit("Error: Subtree mode requires a ref argument.")
+    elif import_method == "copy":
+        if not source_dir:
+            sys.exit("Error: Copy mode requires --source-dir.")
+        if not os.path.isdir(source_dir):
+            sys.exit(f"Error: Source directory {source_dir} does not exist.")
+    else:
+        sys.exit(f"Error: Invalid import method: {import_method}")
 
     success_count = 0
     total_count = 0
 
     # Process modules unless devices_only is specified
     if not devices_only:
-        # Filter modules if specified
         modules_to_process = MODULES
         if modules_filter:
             modules_to_process = {
@@ -181,29 +220,38 @@ def process_modules_and_devices(
 
         if modules_to_process:
             total_count += len(modules_to_process)
-            print(
-                f"Processing {len(modules_to_process)} modules from AOSP repository using ref '{ref}'..."
-            )
+            
+            if import_method == "subtree":
+                print(
+                    f"Processing {len(modules_to_process)} modules from AOSP repository using ref '{ref}'..."
+                )
+            else:
+                print(
+                    f"Processing {len(modules_to_process)} modules from {source_dir}..."
+                )
 
             for module_key, repo_name in modules_to_process.items():
-                repo_url = urljoin(REPO_BASE, repo_name)
-                local_path = f"google-modules/{module_key}"
+                dest_path = f"google-modules/{module_key}"
 
-                # Check if ref exists in the repository
-                exists, ref_type = check_ref_exists(repo_url, ref)
-                if not exists:
-                    print(f"Warning: Ref '{ref}' not found in {repo_name}. Skipping.")
-                    continue
-
-                if ref_type:
-                    print(f"Found '{ref}' as {ref_type} in {repo_name}")
-
-                if add_git_subtree(module_key, local_path, repo_url, ref):
-                    success_count += 1
+                if import_method == "subtree":
+                    repo_url = urljoin(REPO_BASE, repo_name)
+                    exists, ref_type = check_ref_exists(repo_url, ref)
+                    if not exists:
+                        print(f"Warning: Ref '{ref}' not found in {repo_name}. Skipping.")
+                        continue
+                    if ref_type:
+                        print(f"Found '{ref}' as {ref_type} in {repo_name}")
+                    
+                    if import_via_subtree(module_key, dest_path, repo_url, ref):
+                        success_count += 1
+                else:
+                    # Copy mode: look for module in source_dir
+                    source_path = os.path.join(source_dir, "google-modules", module_key)
+                    if import_via_copy(module_key, source_path, dest_path, force):
+                        success_count += 1
 
     # Process devices unless modules_only is specified
     if not modules_only:
-        # Filter devices if specified
         devices_to_process = DEVICES
         if devices_filter:
             devices_to_process = {
@@ -216,25 +264,39 @@ def process_modules_and_devices(
 
         if devices_to_process:
             total_count += len(devices_to_process)
-            print(
-                f"Processing {len(devices_to_process)} devices from AOSP repository using ref '{ref}'..."
-            )
+            
+            if import_method == "subtree":
+                print(
+                    f"Processing {len(devices_to_process)} devices from AOSP repository using ref '{ref}'..."
+                )
+            else:
+                print(
+                    f"Processing {len(devices_to_process)} devices from {source_dir}..."
+                )
 
             for device_key, repo_name in devices_to_process.items():
-                repo_url = urljoin(REPO_BASE, repo_name)
-                local_path = f"google-devices/{device_key}"
+                dest_path = f"google-devices/{device_key}"
 
-                # Check if ref exists in the repository
-                exists, ref_type = check_ref_exists(repo_url, ref)
-                if not exists:
-                    print(f"Warning: Ref '{ref}' not found in {repo_name}. Skipping.")
-                    continue
-
-                if ref_type:
-                    print(f"Found '{ref}' as {ref_type} in {repo_name}")
-
-                if add_git_subtree(device_key, local_path, repo_url, ref):
-                    success_count += 1
+                if import_method == "subtree":
+                    repo_url = urljoin(REPO_BASE, repo_name)
+                    exists, ref_type = check_ref_exists(repo_url, ref)
+                    if not exists:
+                        print(f"Warning: Ref '{ref}' not found in {repo_name}. Skipping.")
+                        continue
+                    if ref_type:
+                        print(f"Found '{ref}' as {ref_type} in {repo_name}")
+                    
+                    if import_via_subtree(device_key, dest_path, repo_url, ref):
+                        success_count += 1
+                else:
+                    # Copy mode: look for device in source_dir
+                    # Try both google-devices and devices/google
+                    source_path = os.path.join(source_dir, "google-devices", device_key)
+                    if not os.path.isdir(source_path):
+                        source_path = os.path.join(source_dir, "devices", "google", device_key)
+                    
+                    if import_via_copy(device_key, source_path, dest_path, force):
+                        success_count += 1
 
     if total_count == 0:
         print("No modules or devices to process.")
@@ -248,25 +310,44 @@ def process_modules_and_devices(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fetch and add Android kernel modules and devices using git subtree.",
+        description="Import Android kernel modules and devices using git subtree or local copy.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
+Examples (git subtree mode - default):
   %(prog)s android-gs-raviole-6.1-android16
-  %(prog)s main --modules amplifiers/cs35l41,gpu/mali_pixel
+  %(prog)s main --modules amplifiers,gpu
   %(prog)s android-16.0.0_r1 -m "display/samsung,touch/common"
   %(prog)s android-16-beta-4.1_r0.1 --devices gs101,raviole
-  %(prog)s android-gs-raviole-6.1-android16 --modules-only
-  %(prog)s android-gs-6.1 --devices-only
-  
-  # Using tags (automatically detected):
-  %(prog)s refs/tags/android-16-beta-4.1_r0.1
-  %(prog)s android-16-beta-4.1_r0.1
+
+Examples (copy mode - from extracted tarball):
+  %(prog)s --import-method copy --source-dir /path/to/extracted/private
+  %(prog)s --import-method copy --source-dir ./private --modules gpu,amplifiers
+  %(prog)s --import-method copy --source-dir ./vendor-tree --devices gs101 --force
         """,
     )
 
     parser.add_argument(
-        "ref", help="Branch, tag, or commit reference to fetch from AOSP repositories"
+        "ref",
+        nargs="?",
+        help="Branch, tag, or commit reference (required for subtree mode)"
+    )
+
+    parser.add_argument(
+        "--import-method",
+        choices=["subtree", "copy"],
+        default="subtree",
+        help="Import method: 'subtree' for git subtree (default), 'copy' for local copy"
+    )
+
+    parser.add_argument(
+        "--source-dir",
+        help="Source directory for copy mode (required when --import-method copy)"
+    )
+
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing destinations in copy mode"
     )
 
     parser.add_argument(
@@ -322,8 +403,12 @@ Examples:
             print(f"  {device}")
         sys.exit(0)
 
-    # Determine which ref to use
-    ref = args.ref
+    # Validate arguments based on import method
+    if args.import_method == "subtree" and not args.ref:
+        parser.error("ref argument is required for subtree mode")
+    
+    if args.import_method == "copy" and not args.source_dir:
+        parser.error("--source-dir is required for copy mode")
 
     # Validate conflicting options
     if args.modules_only and args.devices_only:
@@ -354,11 +439,14 @@ Examples:
                 sys.exit("Error: No valid devices specified.")
 
     process_modules_and_devices(
-        ref,
-        modules_filter,
-        devices_filter,
-        args.modules_only,
-        args.devices_only,
+        ref=args.ref,
+        modules_filter=modules_filter,
+        devices_filter=devices_filter,
+        modules_only=args.modules_only,
+        devices_only=args.devices_only,
+        import_method=args.import_method,
+        source_dir=args.source_dir,
+        force=args.force,
     )
 
 
