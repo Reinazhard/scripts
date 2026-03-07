@@ -7,6 +7,20 @@
 set -euo pipefail
 
 #==============================================================================
+# Environment configuration file
+#==============================================================================
+
+ENV_FILE="${PWD}/build.env"
+
+if [[ -f "${ENV_FILE}" ]]; then
+    echo -e "\e[1;32m[*]\e[0m Loading build.env configuration"
+    set -a
+    # shellcheck source=/dev/null
+    source "${ENV_FILE}"
+    set +a
+fi
+
+#==============================================================================
 # Logging and utilities
 #==============================================================================
 
@@ -35,27 +49,23 @@ readonly KERNEL_DIR="${PWD}"
 readonly KERNEL_BUILD_NUM_FILE="${KERNEL_DIR}/.build_number"
 
 # Device configuration
-readonly ZIPNAME="86hm"
-readonly DEVICE="gs101"
-readonly DEFCONFIG="raviole_defconfig"
-
-# Build identity
-export KBUILD_BUILD_USER="builder"
-export KBUILD_BUILD_HOST="localhost"
+ZIPNAME="86hm"
+DEVICE="gs101"
+DEFCONFIG="raviole_defconfig"
 
 # AnyKernel3 paths
-readonly AK3_DIR="${KERNEL_DIR}/AnyKernel3"
-readonly AK3_IMAGE="${AK3_DIR}/Image.lz4"
-readonly AK3_DTB="${AK3_DIR}/dtb"
-readonly AK3_DTBO="${AK3_DIR}/dtbo.img"
+AK3_DIR="${KERNEL_DIR}/AnyKernel3"
+AK3_IMAGE="${AK3_DIR}/Image.lz4"
+AK3_DTB="${AK3_DIR}/dtb"
+AK3_DTBO="${AK3_DIR}/dtbo.img"
 
 # mkdtimg configuration
 # shellcheck disable=SC2034
-readonly MKDTIMG_URL="https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/utility/mkdtimg/mkdtimg"
-readonly MKDTIMG_FLAGS="--page_size=4096 --id=/:board_id --rev=/:board_rev"
+MKDTIMG_URL="https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/utility/mkdtimg/mkdtimg"
+MKDTIMG_FLAGS="--page_size=4096 --id=/:board_id --rev=/:board_rev"
 
 # LLVM toolchain configuration
-LLVM_VERSION="${LLVM_VERSION:-18.1.8}"
+LLVM_VERSION="${LLVM_VERSION:-22.1.0}"
 LLVM_ARCHIVE="llvm-${LLVM_VERSION}-x86_64.tar.xz"
 LLVM_URL="https://www.kernel.org/pub/tools/llvm/files/${LLVM_ARCHIVE}"
 readonly TOOLCHAIN_DIR="${KERNEL_DIR}/kernel-toolchain"
@@ -77,16 +87,33 @@ if [[ "$CLEAN" != "0" && "$CLEAN" != "1" ]]; then
 fi
 
 # Set output directory and Telegram chat based on release mode
-if [[ "${RELEASE}" == "1" ]]; then
-    OUT_DIR="${KERNEL_DIR}/out-release"
-    CHATID="-1001493260868"
-    export KBUILD_BUILD_TIMESTAMP="Mon Oct 13 22:28:16 UTC 2025"
+# Allow OUT_DIR to be pre-set via environment variable for parallel CI builds
+if [[ -z "${OUT_DIR}" ]]; then
+    if [[ "${RELEASE}" == "1" ]]; then
+        OUT_DIR="${KERNEL_DIR}/out-release"
+    else
+        OUT_DIR="${KERNEL_DIR}/out"
+    fi
 else
-    OUT_DIR="${KERNEL_DIR}/out"
+    # Ensure OUT_DIR is absolute path
+    [[ "${OUT_DIR}" != /* ]] && OUT_DIR="${KERNEL_DIR}/${OUT_DIR}"
+fi
+
+if [[ "${RELEASE}" == "1" ]]; then
+    CHATID="-1001493260868"
+else
     CHATID="-1001403511595"
 fi
 
 readonly OUT_DIR CHATID
+
+# Build artifact paths (depend on OUT_DIR)
+CONFIG_FILE="${OUT_DIR}/.config"
+IMAGE_PATH="${OUT_DIR}/arch/arm64/boot/Image.lz4"
+DTB_FILES=(
+    "${OUT_DIR}/google-devices/raviole/dts/gs101/gs101-a0.dtb"
+    "${OUT_DIR}/google-devices/raviole/dts/gs101/gs101-b0.dtb"
+)
 
 # Telegram configuration
 TELEGRAM_TOKEN="${TELEGRAM_TOKEN:-}"
@@ -199,23 +226,16 @@ setup_environment() {
     export KERVER COMMIT_HEAD CI_BRANCH
 
     # Build number handling
+    unset BUILD_NUMBER
     if [[ "${RELEASE}" == "1" ]]; then
         KERNEL_BUILD_NUM="1"
-        unset BUILD_NUMBER
     else
         KERNEL_BUILD_NUM=$(increment_build_num)
-        unset BUILD_NUMBER
     fi
     export KERNEL_BUILD_NUM
 
     # Create output directory
     mkdir -p "${OUT_DIR}"
-
-    # Build artifact paths
-    readonly CONFIG_FILE="${OUT_DIR}/.config"
-    readonly IMAGE_PATH="${OUT_DIR}/arch/arm64/boot/Image.lz4"
-    readonly DTB_A0="${OUT_DIR}/google-devices/raviole/dts/gs101/gs101-a0.dtb"
-    readonly DTB_B0="${OUT_DIR}/google-devices/raviole/dts/gs101/gs101-b0.dtb"
 
     # Status message
     local build_label="Build #${KERNEL_BUILD_NUM}"
@@ -367,10 +387,12 @@ verify_build_outputs() {
         err "Image.lz4 not found at ${IMAGE_PATH}"
     }
 
-    [[ -f "${DTB_A0}" && -f "${DTB_B0}" ]] || {
-        tg_notify_failure "${variant}" "DTB files not found"
-        err "DTB files not found"
-    }
+    for dtb in "${DTB_FILES[@]}"; do
+        [[ -f "${dtb}" ]] || {
+            tg_notify_failure "${variant}" "DTB files not found"
+            err "DTB files not found"
+        }
+    done
 
     msg "${variant} build outputs verified"
 }
@@ -442,7 +464,7 @@ generate_zip() {
         err "Failed to copy Image.lz4 to AnyKernel3"
     }
 
-    cat "${DTB_A0}" "${DTB_B0}" > "${AK3_DTB}" || {
+    cat "${DTB_FILES[@]}" > "${AK3_DTB}" || {
         tg_notify_failure "${variant}" "failed to concatenate DTBs"
         err "Failed to create DTB file"
     }
@@ -557,7 +579,7 @@ main() {
     [[ "${RELEASE}" == "1" ]] && msg "  RELEASE BUILD MODE"
     msg "  Raviole Kernel Build System"
     if [[ "${KSU}" == "1" ]]; then
-        msg "  Standard + KernelSU Variants"
+        msg "  KernelSU Variant"
     else
         msg "  Standard Variant"
     fi
@@ -565,21 +587,15 @@ main() {
 
     setup_environment
 
-    # Build Standard variant
-    build_variant "Standard" "0"
-    echo ""
-
-    # Build KernelSU variant only when KSU=1
+    # Build based on KSU setting
     if [[ "${KSU}" == "1" ]]; then
         build_variant "KernelSU" "1"
+    else
+        build_variant "Standard" "0"
     fi
 
     msg "========================================"
-    if [[ "${KSU}" == "1" ]]; then
-        msg "  All Builds Completed Successfully"
-    else
-        msg "  Build Completed Successfully"
-    fi
+    msg "  Build Completed Successfully"
     [[ "${RELEASE}" != "1" ]] && msg "  Build #${KERNEL_BUILD_NUM}"
     msg "========================================"
 }
