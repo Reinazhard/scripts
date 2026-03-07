@@ -61,7 +61,7 @@ AK3_DTBO="${AK3_DIR}/dtbo.img"
 
 # mkdtimg configuration
 # shellcheck disable=SC2034
-MKDTIMG_URL="https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/utility/mkdtimg/mkdtimg"
+MKDTIMG_URL="https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/utility/mkdtimg"
 MKDTIMG_FLAGS="--page_size=4096 --id=/:board_id --rev=/:board_rev"
 
 # LLVM toolchain configuration
@@ -405,14 +405,14 @@ generate_dtbo() {
     local variant="$1"
     msg "Generating dtbo.img..."
 
-    if [[ ! -x "${KERNEL_DIR}/mkdtimg" ]]; then
+    if [[ ! -f "${KERNEL_DIR}/mkdtimg" ]]; then
         msg "Downloading mkdtimg..."
         curl -sLo "${KERNEL_DIR}/mkdtimg" "${MKDTIMG_URL}" || {
             tg_notify_failure "${variant}" "mkdtimg download failed"
             err "Failed to download mkdtimg"
         }
-        chmod +x "${KERNEL_DIR}/mkdtimg"
     fi
+    chmod +x "${KERNEL_DIR}/mkdtimg"
 
     local dtbo_files
     # shellcheck disable=SC2207
