@@ -40,8 +40,8 @@ readonly DEVICE="gs101"
 readonly DEFCONFIG="raviole_defconfig"
 
 # Build identity
-export KBUILD_BUILD_USER="harumajati"
-export KBUILD_BUILD_HOST="marcejz"
+export KBUILD_BUILD_USER="builder"
+export KBUILD_BUILD_HOST="localhost"
 
 # AnyKernel3 paths
 readonly AK3_DIR="${KERNEL_DIR}/AnyKernel3"
@@ -54,13 +54,27 @@ readonly AK3_DTBO="${AK3_DIR}/dtbo.img"
 readonly MKDTIMG_URL="https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/utility/mkdtimg/mkdtimg"
 readonly MKDTIMG_FLAGS="--page_size=4096 --id=/:board_id --rev=/:board_rev"
 
+# LLVM toolchain configuration
+LLVM_VERSION="${LLVM_VERSION:-18.1.8}"
+LLVM_ARCHIVE="llvm-${LLVM_VERSION}-x86_64.tar.xz"
+LLVM_URL="https://www.kernel.org/pub/tools/llvm/files/${LLVM_ARCHIVE}"
+readonly TOOLCHAIN_DIR="${KERNEL_DIR}/kernel-toolchain"
+
 # Release mode: 0 = test, 1 = release
 RELEASE="${RELEASE:-0}"
 [[ "${RELEASE}" != "0" && "${RELEASE}" != "1" ]] && err "RELEASE must be 0 or 1, got: ${RELEASE}"
 
-# Clean control: 0 = skip mrproper, 1 = run mrproper (default: run for all builds)
-NO_CLEAN="${NO_CLEAN:-0}"
-[[ "${NO_CLEAN}" != "0" && "${NO_CLEAN}" != "1" ]] && err "NO_CLEAN must be 0 or 1, got: ${NO_CLEAN}"
+# KernelSU mode: 0 = standard only, 1 = standard + KernelSU
+KSU="${KSU:-0}"
+if [[ "$KSU" != "0" && "$KSU" != "1" ]]; then
+    err "KSU must be 0 or 1"
+fi
+
+# Clean control: 0 = skip clean (default), 1 = remove out dir before build
+CLEAN="${CLEAN:-0}"
+if [[ "$CLEAN" != "0" && "$CLEAN" != "1" ]]; then
+    err "CLEAN must be 0 or 1"
+fi
 
 # Set output directory and Telegram chat based on release mode
 if [[ "${RELEASE}" == "1" ]]; then
@@ -108,11 +122,60 @@ validate_toolchain() {
 }
 
 #==============================================================================
+# Toolchain setup
+#==============================================================================
+
+setup_toolchain() {
+    if [[ -f "${TOOLCHAIN_DIR}/bin/clang" ]]; then
+        msg "Toolchain already present, skipping download"
+    else
+        msg "Downloading LLVM ${LLVM_VERSION} toolchain..."
+        curl -L -o "${KERNEL_DIR}/${LLVM_ARCHIVE}" "${LLVM_URL}" || err "Failed to download LLVM toolchain"
+
+        msg "Extracting LLVM toolchain..."
+        tar -xf "${KERNEL_DIR}/${LLVM_ARCHIVE}" -C "${KERNEL_DIR}" || err "Failed to extract LLVM toolchain"
+
+        local extracted_dir
+        extracted_dir=$(find "${KERNEL_DIR}" -maxdepth 1 -name "llvm-*" -type d | head -1)
+        [[ -z "${extracted_dir}" ]] && err "Could not find extracted LLVM directory"
+
+        mv "${extracted_dir}" "${TOOLCHAIN_DIR}" || err "Failed to move LLVM toolchain to ${TOOLCHAIN_DIR}"
+
+        rm -f "${KERNEL_DIR}/${LLVM_ARCHIVE}"
+        msg "LLVM toolchain installed to ${TOOLCHAIN_DIR}"
+    fi
+
+    export PATH="${TOOLCHAIN_DIR}/bin:${PATH}"
+
+    command -v clang &> /dev/null || err "LLVM toolchain setup failed"
+}
+
+#==============================================================================
+# AnyKernel3 setup
+#==============================================================================
+
+setup_anykernel() {
+    if [[ -d "${KERNEL_DIR}/AnyKernel3" ]]; then
+        msg "AnyKernel3 already present, skipping clone"
+    else
+        msg "Cloning AnyKernel3..."
+        git clone https://github.com/Reinazhard/AnyKernel3 \
+            --single-branch \
+            --depth 1 \
+            AnyKernel3 || err "Failed to clone AnyKernel3"
+        msg "AnyKernel3 cloned"
+    fi
+}
+
+#==============================================================================
 # Environment setup
 #==============================================================================
 
 setup_environment() {
     msg "Setting up build environment..."
+
+    setup_toolchain
+    setup_anykernel
 
     validate_toolchain
 
@@ -151,8 +214,8 @@ setup_environment() {
     # Build artifact paths
     readonly CONFIG_FILE="${OUT_DIR}/.config"
     readonly IMAGE_PATH="${OUT_DIR}/arch/arm64/boot/Image.lz4"
-    readonly DTB_A0="${OUT_DIR}/google-devices/gs101/dts/gs101-a0.dtb"
-    readonly DTB_B0="${OUT_DIR}/google-devices/gs101/dts/gs101-b0.dtb"
+    readonly DTB_A0="${OUT_DIR}/google-devices/raviole/dts/gs101/gs101-a0.dtb"
+    readonly DTB_B0="${OUT_DIR}/google-devices/raviole/dts/gs101/gs101-b0.dtb"
 
     # Status message
     local build_label="Build #${KERNEL_BUILD_NUM}"
@@ -160,7 +223,7 @@ setup_environment() {
     msg "${build_label} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
     msg "Compiler: ${KBUILD_COMPILER_STRING}"
     msg "Parallel jobs: ${PROCS}"
-    [[ "${NO_CLEAN}" == "1" ]] && msg "Clean: Disabled (NO_CLEAN=1)" || msg "Clean: Enabled (mrproper will run)"
+    [[ "${CLEAN}" == "1" ]] && msg "Clean: Enabled (out dir will be removed)" || msg "Clean: Disabled (skipping clean)"
 }
 
 #==============================================================================
@@ -234,7 +297,7 @@ make_kernel() {
     make -j"${PROCS}" \
         O="${OUT_DIR}" \
         ARCH="${ARCH}" \
-        LLVM=1 \
+        LLVM="${TOOLCHAIN_DIR}" \
         LLVM_IAS=1 \
         LOCALVERSION="${LOCALVERSION}" \
         KBUILD_BUILD_VERSION="${KERNEL_BUILD_NUM}" \
@@ -242,9 +305,10 @@ make_kernel() {
 }
 
 clean_build_environment() {
-    [[ "${NO_CLEAN}" == "1" ]] && msg "Skipping mrproper (NO_CLEAN=1)" && return 0
-    msg "Performing mrproper (full clean)..."
-    make O="${OUT_DIR}" mrproper 2>&1 | grep -v "is up to date" || true
+    [[ "${CLEAN}" == "0" ]] && msg "Skipping clean (CLEAN=0)" && return 0
+    msg "Cleaning build environment..."
+    rm -rf "${OUT_DIR}"
+    mkdir -p "${OUT_DIR}"
     msg "Build environment cleaned"
 }
 
@@ -492,7 +556,11 @@ main() {
     msg "========================================"
     [[ "${RELEASE}" == "1" ]] && msg "  RELEASE BUILD MODE"
     msg "  Raviole Kernel Build System"
-    msg "  Standard + KernelSU Variants"
+    if [[ "${KSU}" == "1" ]]; then
+        msg "  Standard + KernelSU Variants"
+    else
+        msg "  Standard Variant"
+    fi
     msg "========================================"
 
     setup_environment
@@ -501,11 +569,17 @@ main() {
     build_variant "Standard" "0"
     echo ""
 
-    # Build KernelSU variant
-    build_variant "KernelSU" "1"
+    # Build KernelSU variant only when KSU=1
+    if [[ "${KSU}" == "1" ]]; then
+        build_variant "KernelSU" "1"
+    fi
 
     msg "========================================"
-    msg "  All Builds Completed Successfully"
+    if [[ "${KSU}" == "1" ]]; then
+        msg "  All Builds Completed Successfully"
+    else
+        msg "  Build Completed Successfully"
+    fi
     [[ "${RELEASE}" != "1" ]] && msg "  Build #${KERNEL_BUILD_NUM}"
     msg "========================================"
 }
