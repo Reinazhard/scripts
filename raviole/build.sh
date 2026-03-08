@@ -317,7 +317,7 @@ make_kernel() {
     make -j"${PROCS}" \
         O="${OUT_DIR}" \
         ARCH="${ARCH}" \
-        LLVM="${TOOLCHAIN_DIR}" \
+        LLVM="${TOOLCHAIN_DIR}/bin/" \
         LLVM_IAS=1 \
         LOCALVERSION="${LOCALVERSION}" \
         KBUILD_BUILD_VERSION="${KERNEL_BUILD_NUM}" \
