@@ -118,3 +118,32 @@ AK3_DTBO="${AK3_DIR}/dtbo.img"
 
 # Build timing
 BUILD_DURATION=0
+
+#==============================================================================
+# Dependency checking
+#==============================================================================
+
+check_dependencies() {
+    local missing=()
+    local deps=(git make curl unzip zip)
+
+    if [[ "${TOOLCHAIN}" == "gcc" ]]; then
+        deps+=(xz zstd)
+    else
+        deps+=(xz)
+    fi
+
+    if [[ "${SIGN}" == "1" ]]; then
+        deps+=(java)
+    fi
+
+    for cmd in "${deps[@]}"; do
+        if ! command -v "${cmd}" &> /dev/null; then
+            missing+=("${cmd}")
+        fi
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        err "Missing dependencies: ${missing[*]}"
+    fi
+}
