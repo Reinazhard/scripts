@@ -251,3 +251,81 @@ fetch_clang_toolchain() {
     CLANG_TOOLCHAIN_DIR="${clang_dir}"
     msg "LLVM toolchain installed: ${clang_dir}"
 }
+
+#==============================================================================
+# Environment setup
+#==============================================================================
+
+setup_environment() {
+    msg "Setting up build environment..."
+
+    # Check dependencies
+    check_dependencies
+
+    # Setup toolchain
+    case "${TOOLCHAIN}" in
+        gcc)
+            fetch_gcc_toolchain
+            export CROSS_COMPILE="${GCC_TOOLCHAIN_DIR}/gcc-arm64/bin/aarch64-linux-gnu-"
+            export CROSS_COMPILE_COMPAT="${GCC_TOOLCHAIN_DIR}/gcc-arm/bin/arm-linux-gnueabihf-"
+            ;;
+        clang)
+            fetch_clang_toolchain
+            export PATH="${CLANG_TOOLCHAIN_DIR}/bin:${PATH}"
+            ;;
+        *)
+            err "Unknown toolchain: ${TOOLCHAIN}. Use 'gcc' or 'clang'."
+            ;;
+    esac
+
+    # Setup AnyKernel3
+    if [[ ! -d "${AK3_DIR}" ]]; then
+        msg "Cloning AnyKernel3 from ${AK3_REPO}..."
+        git clone "https://github.com/${AK3_REPO}.git" \
+            --single-branch --depth 1 "${AK3_DIR}" || err "Failed to clone AnyKernel3"
+    fi
+
+    # Architecture
+    export ARCH="arm64"
+
+    # Compiler info
+    if [[ "${TOOLCHAIN}" == "clang" ]]; then
+        KBUILD_COMPILER_STRING=$(clang --version | head -n 1 \
+            | sed -e 's/(http[^)]*)//g' -e 's/  */ /g' -e 's/[[:space:]]*$//')
+    else
+        KBUILD_COMPILER_STRING=$("${CROSS_COMPILE}gcc" --version | head -n 1)
+    fi
+    export KBUILD_COMPILER_STRING
+
+    # Parallel jobs
+    PROCS=$(nproc --all)
+    export PROCS
+
+    # Kernel version and git info
+    KERVER=$(make kernelversion)
+    COMMIT_HEAD=$(git log -n 1 --oneline)
+    CI_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    export KERVER COMMIT_HEAD CI_BRANCH
+
+    # Build number handling
+    if [[ "${RELEASE}" == "1" ]]; then
+        KERNEL_BUILD_NUM="1"
+    elif [[ -f "${KERNEL_BUILD_NUM_FILE}" ]]; then
+        KERNEL_BUILD_NUM=$(($(cat "${KERNEL_BUILD_NUM_FILE}") + 1))
+    else
+        KERNEL_BUILD_NUM="0"
+    fi
+    echo "${KERNEL_BUILD_NUM}" > "${KERNEL_BUILD_NUM_FILE}"
+    export KERNEL_BUILD_NUM
+
+    # Create output directory
+    mkdir -p "${OUT_DIR}"
+
+    # Status message
+    local build_label="Build #${KERNEL_BUILD_NUM}"
+    [[ "${RELEASE}" == "1" ]] && build_label="RELEASE Build"
+    msg "${build_label} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
+    msg "Toolchain: ${TOOLCHAIN} | Compiler: ${KBUILD_COMPILER_STRING}"
+    msg "Parallel jobs: ${PROCS}"
+    [[ "${CLEAN}" == "1" ]] && msg "Clean: Enabled" || msg "Clean: Disabled"
+}
