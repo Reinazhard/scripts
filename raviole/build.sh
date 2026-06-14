@@ -410,3 +410,138 @@ on_error() {
     [[ ${exit_code} -ne 0 ]] && tg_notify_failure "Build" "failed at line ${line} (exit code: ${exit_code})"
     exit "${exit_code}"
 }
+
+#==============================================================================
+# Build number management
+#==============================================================================
+
+compute_localversion() {
+    local variant="$1"
+    local lv=""
+    [[ "${variant}" == "KernelSU" ]] && lv="-ybrt"
+    [[ "${RELEASE}" != "1" ]] && lv="${lv}-b${KERNEL_BUILD_NUM}"
+    echo "${lv}"
+}
+
+#==============================================================================
+# Kernel build functions
+#==============================================================================
+
+make_kernel() {
+    local make_args=(-j"${PROCS}" O="${OUT_DIR}" ARCH="${ARCH}")
+
+    case "${TOOLCHAIN}" in
+        clang)
+            make_args+=(LLVM="${CLANG_TOOLCHAIN_DIR}/bin/" LLVM_IAS=1)
+            ;;
+        gcc)
+            make_args+=(CC="${CROSS_COMPILE}gcc")
+            ;;
+    esac
+
+    make "${make_args[@]}" \
+        LOCALVERSION="${LOCALVERSION}" \
+        KBUILD_BUILD_VERSION="${KERNEL_BUILD_NUM}" \
+        "$@"
+}
+
+configure_kernel() {
+    local variant="$1"
+    msg "Configuring ${variant} kernel..."
+
+    make_kernel "${DEFCONFIG}" > /dev/null 2>&1 || {
+        tg_notify_failure "${variant}" "defconfig generation failed"
+        err "Failed to generate ${DEFCONFIG}"
+    }
+
+    if [[ "${variant}" == "KernelSU" ]]; then
+        msg "Enabling KernelSU features..."
+        scripts/config --file "${OUT_DIR}/.config" \
+            -e KSU \
+            -e KSU_THRONE_TRACKER_ALWAYS_THREADED || {
+            tg_notify_failure "${variant}" "KernelSU config failed"
+            err "Failed to enable KernelSU features"
+        }
+    fi
+
+    make_kernel olddefconfig > /dev/null 2>&1 || {
+        tg_notify_failure "${variant}" "olddefconfig failed"
+        err "Failed to finalize configuration"
+    }
+
+    msg "Configuration complete"
+}
+
+compile_kernel() {
+    local variant="$1"
+    local start end
+
+    msg "Building ${variant} kernel..."
+    start=$(date +"%s")
+
+    if make_kernel; then
+        end=$(date +"%s")
+        BUILD_DURATION=$((end - start))
+        msg "${variant} compilation completed in $(format_duration ${BUILD_DURATION})"
+    else
+        end=$(date +"%s")
+        BUILD_DURATION=$((end - start))
+        tg_notify_failure "${variant}" "compilation failed after $(format_duration ${BUILD_DURATION})"
+        err "${variant} kernel compilation failed"
+    fi
+}
+
+verify_build_outputs() {
+    local variant="$1"
+    msg "Verifying build outputs..."
+
+    [[ -f "${IMAGE_PATH}" ]] || {
+        tg_notify_failure "${variant}" "${KERNEL_IMAGE} not found"
+        err "${KERNEL_IMAGE} not found at ${IMAGE_PATH}"
+    }
+
+    for dtb in "${DTB_PATHS[@]}"; do
+        [[ -f "${dtb}" ]] || {
+            tg_notify_failure "${variant}" "DTB files not found"
+            err "DTB files not found: ${dtb}"
+        }
+    done
+
+    msg "${variant} build outputs verified"
+}
+
+#==============================================================================
+# DTBO generation
+#==============================================================================
+
+generate_dtbo() {
+    local variant="$1"
+    msg "Generating dtbo.img..."
+
+    if [[ ! -f "${KERNEL_DIR}/mkdtimg" ]]; then
+        msg "Downloading mkdtimg..."
+        curl -sLo "${KERNEL_DIR}/mkdtimg" "${MKDTIMG_URL}" || {
+            tg_notify_failure "${variant}" "mkdtimg download failed"
+            err "Failed to download mkdtimg"
+        }
+    fi
+    chmod +x "${KERNEL_DIR}/mkdtimg"
+
+    local dtbo_files
+    # shellcheck disable=SC2207
+    dtbo_files=( $(find "${OUT_DIR}" -name 'gs*.dtbo' | sort) )
+
+    [[ ${#dtbo_files[@]} -eq 0 ]] && {
+        tg_notify_failure "${variant}" "no dtbo files found"
+        err "No gs*.dtbo files found in ${OUT_DIR}"
+    }
+
+    cd "${KERNEL_DIR}"
+    # shellcheck disable=SC2086
+    ./mkdtimg create dtbo.img ${MKDTIMG_FLAGS} "${dtbo_files[@]}" || {
+        tg_notify_failure "${variant}" "dtbo.img generation failed"
+        err "Failed to generate dtbo.img"
+    }
+
+    msg "dtbo.img generated (${#dtbo_files[@]} dtbo file(s))"
+}
