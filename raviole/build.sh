@@ -545,3 +545,105 @@ generate_dtbo() {
 
     msg "dtbo.img generated (${#dtbo_files[@]} dtbo file(s))"
 }
+
+#==============================================================================
+# Packaging
+#==============================================================================
+
+construct_zip_filename() {
+    local suffix="$1"
+    local filename="${ZIPNAME}-${DEVICE}"
+
+    if [[ -n "${suffix}" ]]; then
+        filename="${filename}-${suffix}"
+    fi
+
+    if [[ "${RELEASE}" != "1" ]]; then
+        filename="${filename}-b${KERNEL_BUILD_NUM}"
+    fi
+
+    echo "${filename}.zip"
+}
+
+generate_zip() {
+    local variant="$1"
+    local zip_suffix="$2"
+    local zip_final
+    zip_final=$(construct_zip_filename "${zip_suffix}")
+
+    msg "Packaging ${variant} flashable zip: ${zip_final}"
+
+    cp "${IMAGE_PATH}" "${AK3_IMAGE}" || {
+        tg_notify_failure "${variant}" "failed to copy kernel image"
+        err "Failed to copy ${KERNEL_IMAGE} to AnyKernel3"
+    }
+
+    cat "${DTB_PATHS[@]}" > "${AK3_DTB}" || {
+        tg_notify_failure "${variant}" "failed to concatenate DTBs"
+        err "Failed to create DTB file"
+    }
+
+    cp "${KERNEL_DIR}/dtbo.img" "${AK3_DTBO}" || {
+        tg_notify_failure "${variant}" "failed to copy dtbo.img"
+        err "Failed to copy dtbo.img to AnyKernel3"
+    }
+
+    cd "${AK3_DIR}" || err "Failed to enter AnyKernel3 directory"
+
+    rm -f unsigned.zip
+
+    zip -r9 -q "unsigned.zip" . \
+        -x '*.git*/*' \
+        -x '*.github*/*' \
+        -x '*README.md*' \
+        -x '*.zip*' \
+        -x '*zipsigner-3.0.jar*' || {
+        cd "${KERNEL_DIR}"
+        tg_notify_failure "${variant}" "zip creation failed"
+        err "Failed to create unsigned zip"
+    }
+
+    # Validate zip integrity
+    msg "Validating zip integrity..."
+    if ! zip -T "unsigned.zip" > /dev/null 2>&1; then
+        cd "${KERNEL_DIR}"
+        tg_notify_failure "${variant}" "zip validation failed"
+        err "Zip validation failed"
+    fi
+
+    local zip_final_path
+    if [[ "${SIGN}" == "1" ]]; then
+        if [[ ! -f "zipsigner-3.0.jar" ]]; then
+            msg "Downloading zipsigner..."
+            curl -sLo zipsigner-3.0.jar \
+                "https://raw.githubusercontent.com/raphielscape/scripts/master/zipsigner-3.0.jar" || {
+                cd "${KERNEL_DIR}"
+                tg_notify_failure "${variant}" "zipsigner download failed"
+                err "Failed to download zipsigner"
+            }
+        fi
+
+        msg "Signing ${zip_final}..."
+        java -jar zipsigner-3.0.jar unsigned.zip "${zip_final}" 2>&1 | grep -v "^$" || true
+
+        if [[ ! -f "${zip_final}" ]]; then
+            cd "${KERNEL_DIR}"
+            tg_notify_failure "${variant}" "zip signing failed"
+            err "Failed to sign zip"
+        fi
+        rm -f unsigned.zip
+        zip_final_path="${AK3_DIR}/${zip_final}"
+    else
+        mv "unsigned.zip" "${zip_final}"
+        zip_final_path="${AK3_DIR}/${zip_final}"
+    fi
+
+    local build_info="Build #${KERNEL_BUILD_NUM}"
+    [[ "${RELEASE}" == "1" ]] && build_info="Release"
+
+    local caption="✅ ${variant} completed in $(format_duration ${BUILD_DURATION}) | <code>${build_info}</code>"
+    tg_post_build "${zip_final_path}" "${caption}"
+
+    msg "Flashable zip: ${zip_final_path}"
+    cd "${KERNEL_DIR}"
+}
