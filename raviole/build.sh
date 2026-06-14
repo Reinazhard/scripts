@@ -147,3 +147,60 @@ check_dependencies() {
         err "Missing dependencies: ${missing[*]}"
     fi
 }
+
+#==============================================================================
+# GCC toolchain download
+#==============================================================================
+
+fetch_gcc_toolchain() {
+    msg "Fetching latest GCC toolchain release..."
+
+    local tag
+    tag=$(curl -sL "https://api.github.com/repos/${GCC_REPO}/releases/latest" \
+        | grep -oP '"tag_name":\s*"\K[^"]+') || true
+
+    if [[ -z "${tag}" ]]; then
+        err "Failed to fetch latest GCC toolchain tag"
+    fi
+
+    msg "Latest GCC toolchain: ${tag}"
+
+    local gcc_dir="${KERNEL_DIR}/gcc-${tag}"
+    if [[ -d "${gcc_dir}" ]]; then
+        msg "GCC toolchain already cached: ${gcc_dir}"
+        GCC_TOOLCHAIN_DIR="${gcc_dir}"
+        return 0
+    fi
+
+    msg "Downloading GCC toolchains..."
+    mkdir -p "${gcc_dir}"
+
+    local assets
+    assets=$(curl -sL "https://api.github.com/repos/${GCC_REPO}/releases/latest" \
+        | grep -oP '"browser_download_url":\s*"\K[^"]+')
+
+    local arm64_url arm_url
+    arm64_url=$(echo "${assets}" | grep 'toolchain-arm64-.*\.tar\.zst$' || true)
+    arm_url=$(echo "${assets}" | grep 'toolchain-arm-' | grep -v arm64 | grep '\.tar\.zst$' || true)
+
+    if [[ -z "${arm64_url}" ]]; then
+        err "Failed to find arm64 GCC toolchain in release ${tag}"
+    fi
+
+    msg "Downloading arm64 GCC toolchain..."
+    curl -sLo "${gcc_dir}/arm64.tar.zst" "${arm64_url}"
+    msg "Extracting arm64 GCC toolchain..."
+    tar -I zstd -xf "${gcc_dir}/arm64.tar.zst" -C "${gcc_dir}"
+    rm -f "${gcc_dir}/arm64.tar.zst"
+
+    if [[ -n "${arm_url}" ]]; then
+        msg "Downloading arm32 GCC toolchain..."
+        curl -sLo "${gcc_dir}/arm.tar.zst" "${arm_url}"
+        msg "Extracting arm32 GCC toolchain..."
+        tar -I zstd -xf "${gcc_dir}/arm.tar.zst" -C "${gcc_dir}"
+        rm -f "${gcc_dir}/arm.tar.zst"
+    fi
+
+    GCC_TOOLCHAIN_DIR="${gcc_dir}"
+    msg "GCC toolchain installed: ${gcc_dir}"
+}
