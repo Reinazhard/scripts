@@ -457,8 +457,7 @@ configure_kernel() {
     if [[ "${variant}" == "KernelSU" ]]; then
         msg "Enabling KernelSU features..."
         scripts/config --file "${OUT_DIR}/.config" \
-            -e KSU \
-            -e KSU_THRONE_TRACKER_ALWAYS_THREADED || {
+            -e KSU || {
             tg_notify_failure "${variant}" "KernelSU config failed"
             err "Failed to enable KernelSU features"
         }
