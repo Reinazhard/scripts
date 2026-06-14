@@ -383,3 +383,30 @@ tg_notify_failure() {
     [[ "${RELEASE}" != "1" ]] && label="Build #${KERNEL_BUILD_NUM}"
     tg_post_msg "<b>❌ ${variant} ${label} failed: ${reason}</b>"
 }
+
+#==============================================================================
+# Clean and error handling
+#==============================================================================
+
+clean_build() {
+    [[ "${CLEAN}" == "0" ]] && msg "Skipping clean (CLEAN=0)" && return 0
+    msg "Cleaning build environment..."
+    rm -rf "${OUT_DIR}"
+    mkdir -p "${OUT_DIR}"
+
+    if [[ -d "${AK3_DIR}" ]]; then
+        rm -f "${AK3_DIR}"/*.zip 2>/dev/null || true
+        rm -f "${AK3_DIR}/${KERNEL_IMAGE}" 2>/dev/null || true
+        rm -f "${AK3_DIR}/dtb" 2>/dev/null || true
+        rm -f "${AK3_DIR}/dtbo.img" 2>/dev/null || true
+    fi
+
+    msg "Build environment cleaned"
+}
+
+on_error() {
+    local exit_code=$?
+    local line=$1
+    [[ ${exit_code} -ne 0 ]] && tg_notify_failure "Build" "failed at line ${line} (exit code: ${exit_code})"
+    exit "${exit_code}"
+}
