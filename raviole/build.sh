@@ -77,6 +77,15 @@ LOG="${LOG:-0}"
 RELEASE="${RELEASE:-0}"
 KSU="${KSU:-0}"
 
+# Normalize CI env (GitHub Actions sets CI=true, we use 0/1)
+CI="${CI:-0}"
+[[ "${CI}" == "true" ]] && CI=1
+[[ "${CI}" != "0" && "${CI}" != "1" ]] && err "CI must be 0 or 1, got: ${CI}"
+
+# Release mode: CI=1 or RELEASE=1
+IS_RELEASE=0
+[[ "${CI}" == "1" || "${RELEASE}" == "1" ]] && IS_RELEASE=1
+
 # Validate config
 [[ "${CLEAN}" != "0" && "${CLEAN}" != "1" ]] && err "CLEAN must be 0 or 1, got: ${CLEAN}"
 [[ "${SIGN}" != "0" && "${SIGN}" != "1" ]] && err "SIGN must be 0 or 1, got: ${SIGN}"
@@ -85,24 +94,18 @@ KSU="${KSU:-0}"
 [[ "${RELEASE}" != "0" && "${RELEASE}" != "1" ]] && err "RELEASE must be 0 or 1, got: ${RELEASE}"
 [[ "${KSU}" != "0" && "${KSU}" != "1" ]] && err "KSU must be 0 or 1, got: ${KSU}"
 
-# Set output directory and Telegram chat based on release mode
+# Single Telegram chat for all builds
+CHATID="${CHATID:--1001403511595}"
+
+readonly OUT_DIR CHATID IS_RELEASE
+
+# Set output directory
 if [[ -z "${OUT_DIR:-}" ]]; then
-    if [[ "${RELEASE}" == "1" ]]; then
-        OUT_DIR="${KERNEL_DIR}/out-release"
-    else
-        OUT_DIR="${KERNEL_DIR}/out"
-    fi
+    OUT_DIR="${KERNEL_DIR}/out"
 else
     [[ "${OUT_DIR}" != /* ]] && OUT_DIR="${KERNEL_DIR}/${OUT_DIR}"
 fi
-
-if [[ "${RELEASE}" == "1" ]]; then
-    CHATID="-1001493260868"
-else
-    CHATID="-1001403511595"
-fi
-
-readonly OUT_DIR CHATID
+readonly OUT_DIR
 
 # Build artifact paths
 IMAGE_PATH="${OUT_DIR}/arch/arm64/boot/${KERNEL_IMAGE}"
@@ -307,15 +310,16 @@ setup_environment() {
     CI_BRANCH=$(git rev-parse --abbrev-ref HEAD)
     export KERVER COMMIT_HEAD CI_BRANCH
 
-    # Build number handling
-    if [[ "${RELEASE}" == "1" ]]; then
+    # Build number handling: CI=1 or RELEASE=1 always #1, local increments .build_number
+    if [[ "${IS_RELEASE}" == "1" ]]; then
         KERNEL_BUILD_NUM="1"
     elif [[ -f "${KERNEL_BUILD_NUM_FILE}" ]]; then
         KERNEL_BUILD_NUM=$(($(cat "${KERNEL_BUILD_NUM_FILE}") + 1))
     else
         KERNEL_BUILD_NUM="0"
     fi
-    echo "${KERNEL_BUILD_NUM}" > "${KERNEL_BUILD_NUM_FILE}"
+    # Only persist build number for local builds
+    [[ "${IS_RELEASE}" == "0" ]] && echo "${KERNEL_BUILD_NUM}" > "${KERNEL_BUILD_NUM_FILE}"
     export KERNEL_BUILD_NUM
 
     # Create output directory
@@ -323,7 +327,7 @@ setup_environment() {
 
     # Status message
     local build_label="Build #${KERNEL_BUILD_NUM}"
-    [[ "${RELEASE}" == "1" ]] && build_label="RELEASE Build"
+    [[ "${IS_RELEASE}" == "1" ]] && build_label="RELEASE Build"
     msg "${build_label} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
     msg "Toolchain: ${TOOLCHAIN} | Compiler: ${KBUILD_COMPILER_STRING}"
     msg "Parallel jobs: ${PROCS}"
@@ -379,8 +383,8 @@ tg_post_build() {
 tg_notify_failure() {
     local variant="$1"
     local reason="$2"
-    local label="Build"
-    [[ "${RELEASE}" != "1" ]] && label="Build #${KERNEL_BUILD_NUM}"
+    local label="Release"
+    [[ "${IS_RELEASE}" == "0" ]] && label="Build #${KERNEL_BUILD_NUM}"
     tg_post_msg "<b>❌ ${variant} ${label} failed: ${reason}</b>"
 }
 
@@ -419,7 +423,7 @@ compute_localversion() {
     local variant="$1"
     local lv=""
     [[ "${variant}" == "KernelSU" ]] && lv="-ybrt"
-    [[ "${RELEASE}" != "1" ]] && lv="${lv}-b${KERNEL_BUILD_NUM}"
+    [[ "${IS_RELEASE}" == "0" ]] && lv="${lv}-b${KERNEL_BUILD_NUM}"
     echo "${lv}"
 }
 
@@ -557,7 +561,7 @@ construct_zip_filename() {
         filename="${filename}-${suffix}"
     fi
 
-    if [[ "${RELEASE}" != "1" ]]; then
+    if [[ "${IS_RELEASE}" == "0" ]]; then
         filename="${filename}-b${KERNEL_BUILD_NUM}"
     fi
 
@@ -638,7 +642,7 @@ generate_zip() {
     fi
 
     local build_info="Build #${KERNEL_BUILD_NUM}"
-    [[ "${RELEASE}" == "1" ]] && build_info="Release"
+    [[ "${IS_RELEASE}" == "1" ]] && build_info="Release"
 
     local caption="✅ ${variant} completed in $(format_duration ${BUILD_DURATION}) | <code>${build_info}</code>"
     tg_post_build "${zip_final_path}" "${caption}"
@@ -664,10 +668,10 @@ build_variant() {
 
     local zip_suffix=""
     [[ "${is_ksu}" == "1" ]] && zip_suffix="ksu-"
-    [[ "${RELEASE}" == "1" ]] && zip_suffix="${zip_suffix}RELEASE" || zip_suffix="${zip_suffix}TEST"
+    [[ "${IS_RELEASE}" == "1" ]] && zip_suffix="${zip_suffix}RELEASE" || zip_suffix="${zip_suffix}TEST"
 
     local build_title="${variant} Build #${KERNEL_BUILD_NUM}"
-    [[ "${RELEASE}" == "1" ]] && build_title="${variant} Release Build"
+    [[ "${IS_RELEASE}" == "1" ]] && build_title="${variant} Release Build"
 
     tg_post_msg "<b>${build_title}</b>%0A\
 <b>Variant:</b> <code>${variant}</code>%0A\
@@ -701,7 +705,7 @@ main() {
     trap 'on_error ${LINENO}' ERR
 
     msg "========================================"
-    [[ "${RELEASE}" == "1" ]] && msg "  RELEASE BUILD MODE"
+    [[ "${IS_RELEASE}" == "1" ]] && msg "  RELEASE BUILD MODE"
     msg "  Raviole Kernel Build System"
     if [[ "${KSU}" == "1" ]]; then
         msg "  KernelSU Variant"
@@ -720,8 +724,16 @@ main() {
 
     msg "========================================"
     msg "  Build Completed Successfully"
-    [[ "${RELEASE}" != "1" ]] && msg "  Build #${KERNEL_BUILD_NUM}"
+    [[ "${IS_RELEASE}" == "0" ]] && msg "  Build #${KERNEL_BUILD_NUM}"
     msg "========================================"
 }
+
+# Build log handling: LOG=1 saves output to timestamped file
+if [[ "${LOG}" == "1" ]]; then
+    mkdir -p "${OUT_DIR:-/dev/null}"
+    LOG_FILE="${OUT_DIR:-.}/build-$(date +%Y%m%d-%H%M%S).log"
+    exec > >(tee -a "${LOG_FILE}") 2>&1
+    msg "Build log: ${LOG_FILE}"
+fi
 
 main "$@"
