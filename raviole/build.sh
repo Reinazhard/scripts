@@ -647,3 +647,82 @@ generate_zip() {
     msg "Flashable zip: ${zip_final_path}"
     cd "${KERNEL_DIR}"
 }
+
+#==============================================================================
+# Build orchestration
+#==============================================================================
+
+build_variant() {
+    local variant="$1"
+    local is_ksu="$2"
+
+    msg "========================================"
+    msg "  ${variant} Variant Build"
+    msg "========================================"
+
+    LOCALVERSION=$(compute_localversion "${variant}")
+    msg "LOCALVERSION: ${LOCALVERSION}"
+
+    local zip_suffix=""
+    [[ "${is_ksu}" == "1" ]] && zip_suffix="ksu-"
+    [[ "${RELEASE}" == "1" ]] && zip_suffix="${zip_suffix}RELEASE" || zip_suffix="${zip_suffix}TEST"
+
+    local build_title="${variant} Build #${KERNEL_BUILD_NUM}"
+    [[ "${RELEASE}" == "1" ]] && build_title="${variant} Release Build"
+
+    tg_post_msg "<b>${build_title}</b>%0A\
+<b>Variant:</b> <code>${variant}</code>%0A\
+<b>Kernel:</b> <code>${KERVER}</code>%0A\
+<b>Device:</b> <code>${DEVICE}</code>%0A\
+<b>Toolchain:</b> <code>${TOOLCHAIN}</code>%0A\
+<b>Date:</b> <code>$(TZ=Asia/Jakarta date)</code>%0A\
+<b>Compiler:</b> <code>${KBUILD_COMPILER_STRING}</code>%0A\
+<b>Branch:</b> <code>${CI_BRANCH}</code>%0A\
+<b>HEAD:</b> <code>${COMMIT_HEAD}</code>"
+
+    clean_build
+    configure_kernel "${variant}"
+    compile_kernel "${variant}"
+    verify_build_outputs "${variant}"
+    generate_dtbo "${variant}"
+    generate_zip "${variant}" "${zip_suffix}"
+
+    msg "Cleaning up dtbo artifacts..."
+    find "${OUT_DIR}" -name 'gs*.dtbo' -delete
+    rm -f "${KERNEL_DIR}/dtbo.img"
+
+    msg "${variant} build complete"
+}
+
+#==============================================================================
+# Main entry point
+#==============================================================================
+
+main() {
+    trap 'on_error ${LINENO}' ERR
+
+    msg "========================================"
+    [[ "${RELEASE}" == "1" ]] && msg "  RELEASE BUILD MODE"
+    msg "  Raviole Kernel Build System"
+    if [[ "${KSU}" == "1" ]]; then
+        msg "  KernelSU Variant"
+    else
+        msg "  Standard Variant"
+    fi
+    msg "========================================"
+
+    setup_environment
+
+    if [[ "${KSU}" == "1" ]]; then
+        build_variant "KernelSU" "1"
+    else
+        build_variant "Standard" "0"
+    fi
+
+    msg "========================================"
+    msg "  Build Completed Successfully"
+    [[ "${RELEASE}" != "1" ]] && msg "  Build #${KERNEL_BUILD_NUM}"
+    msg "========================================"
+}
+
+main "$@"
