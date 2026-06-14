@@ -204,3 +204,50 @@ fetch_gcc_toolchain() {
     GCC_TOOLCHAIN_DIR="${gcc_dir}"
     msg "GCC toolchain installed: ${gcc_dir}"
 }
+
+#==============================================================================
+# LLVM/Clang toolchain download
+#==============================================================================
+
+fetch_clang_toolchain() {
+    msg "Fetching latest LLVM toolchain..."
+
+    local version
+    version=$(curl -sL "${LLVM_BASE_URL}/" \
+        | grep -oP 'llvm-\K[0-9]+\.[0-9]+\.[0-9]+(?=-x86_64\.tar\.xz)' \
+        | sort -t. -k1,1V -k2,2n -k3,3n \
+        | tail -n1) || true
+
+    if [[ -z "${version}" ]]; then
+        err "Failed to fetch latest LLVM version"
+    fi
+
+    msg "Latest LLVM: ${version}"
+
+    local clang_dir="${KERNEL_DIR}/llvm-${version}"
+    if [[ -d "${clang_dir}" ]]; then
+        msg "LLVM toolchain already cached: ${clang_dir}"
+        CLANG_TOOLCHAIN_DIR="${clang_dir}"
+        return 0
+    fi
+
+    msg "Downloading LLVM ${version}..."
+    mkdir -p "${clang_dir}"
+
+    local tarball="llvm-${version}-x86_64.tar.xz"
+    local url="${LLVM_BASE_URL}/${tarball}"
+
+    curl -sLo "${clang_dir}/${tarball}" "${url}"
+    msg "Extracting LLVM toolchain..."
+    tar -xJf "${clang_dir}/${tarball}" -C "${clang_dir}"
+    rm -f "${clang_dir}/${tarball}"
+
+    local inner_dir="${clang_dir}/llvm-${version}-x86_64"
+    if [[ -d "${inner_dir}" ]]; then
+        mv "${inner_dir}"/* "${clang_dir}/"
+        rmdir "${inner_dir}"
+    fi
+
+    CLANG_TOOLCHAIN_DIR="${clang_dir}"
+    msg "LLVM toolchain installed: ${clang_dir}"
+}
