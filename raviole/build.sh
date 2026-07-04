@@ -97,7 +97,7 @@ IS_RELEASE=0
 # Single Telegram chat for all builds
 CHATID="${CHATID:--1001403511595}"
 
-readonly OUT_DIR CHATID IS_RELEASE
+readonly CHATID IS_RELEASE
 
 # Set output directory
 if [[ -z "${OUT_DIR:-}" ]]; then
@@ -248,7 +248,7 @@ fetch_clang_toolchain() {
     local inner_dir="${clang_dir}/llvm-${version}-x86_64"
     if [[ -d "${inner_dir}" ]]; then
         mv "${inner_dir}"/* "${clang_dir}/"
-        rmdir "${inner_dir}"
+        rm -rf "${inner_dir}"
     fi
 
     CLANG_TOOLCHAIN_DIR="${clang_dir}"
