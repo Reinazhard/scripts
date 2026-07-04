@@ -300,6 +300,9 @@ setup_environment() {
     fi
     export KBUILD_COMPILER_STRING
 
+    # Spoof build date for release builds
+    [[ "${IS_RELEASE}" == "1" ]] && export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-Wed Jan 28 05:34:14 UTC 2026}"
+
     # Parallel jobs
     PROCS=$(nproc --all)
     export PROCS
