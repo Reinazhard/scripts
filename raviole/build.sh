@@ -297,7 +297,7 @@ setup_environment() {
     fi
 
     # Setup KernelSU
-    if [[ "${KSU}" == "1" && ! -d "${KSU_DIR}" ]]; then
+    if [[ ! -d "${KSU_DIR}" ]]; then
         msg "Cloning KernelSU from ${KSU_REPO}..."
         git clone "git@github.com:${KSU_REPO}.git" \
             -b "${KSU_BRANCH}" --single-branch --depth 1 "${KSU_DIR}" || err "Failed to clone KernelSU"
