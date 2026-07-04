@@ -82,6 +82,9 @@ CI="${CI:-0}"
 [[ "${CI}" == "true" ]] && CI=1
 [[ "${CI}" != "0" && "${CI}" != "1" ]] && err "CI must be 0 or 1, got: ${CI}"
 
+# CI=1 forces full release mode
+[[ "${CI}" == "1" ]] && { SIGN=1 RELEASE=1 CLEAN=1 LOG=1 NOTIFY=1; }
+
 # Release mode: CI=1 or RELEASE=1
 IS_RELEASE=0
 [[ "${CI}" == "1" || "${RELEASE}" == "1" ]] && IS_RELEASE=1
