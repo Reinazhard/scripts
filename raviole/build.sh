@@ -59,6 +59,11 @@ TOOLCHAIN="${TOOLCHAIN:-clang}"
 AK3_REPO="${AK3_REPO:-Reinazhard/AnyKernel3}"
 AK3_DIR="${KERNEL_DIR}/AnyKernel3"
 
+# KernelSU configuration (override via env)
+KSU_REPO="${KSU_REPO:-Reinazhard/KernelSU}"
+KSU_BRANCH="${KSU_BRANCH:-fork}"
+KSU_DIR="${KERNEL_DIR}/KernelSU"
+
 # mkdtimg configuration
 MKDTIMG_URL="https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/utility/mkdtimg"
 MKDTIMG_FLAGS="--page_size=4096 --id=/:board_id --rev=/:board_rev"
@@ -289,6 +294,13 @@ setup_environment() {
         msg "Cloning AnyKernel3 from ${AK3_REPO}..."
         git clone "https://github.com/${AK3_REPO}.git" \
             --single-branch --depth 1 "${AK3_DIR}" || err "Failed to clone AnyKernel3"
+    fi
+
+    # Setup KernelSU
+    if [[ "${KSU}" == "1" && ! -d "${KSU_DIR}" ]]; then
+        msg "Cloning KernelSU from ${KSU_REPO}..."
+        git clone "git@github.com:${KSU_REPO}.git" \
+            -b "${KSU_BRANCH}" --single-branch --depth 1 "${KSU_DIR}" || err "Failed to clone KernelSU"
     fi
 
     # Architecture
