@@ -367,11 +367,21 @@ tg_post_msg() {
     [[ "${NOTIFY}" != "1" ]] && return 0
     [[ -z "${TELEGRAM_TOKEN:-}" ]] && warn "TELEGRAM_TOKEN not set, skipping notification" && return 0
 
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-        -d chat_id="${CHATID}" \
-        -d "disable_web_page_preview=true" \
-        -d "parse_mode=html" \
-        -d text="${message}" > /dev/null 2>&1 || true
+    local max_attempts=3
+    local wait_time=2
+
+    for attempt in $(seq 1 ${max_attempts}); do
+        if curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -d chat_id="${CHATID}" \
+            -d "disable_web_page_preview=true" \
+            -d "parse_mode=html" \
+            -d text="${message}" > /dev/null 2>&1; then
+            return 0
+        fi
+        [[ ${attempt} -lt ${max_attempts} ]] && sleep ${wait_time}
+        wait_time=$((wait_time * 2))
+    done
+    warn "Failed to send Telegram message after ${max_attempts} attempts"
 }
 
 tg_post_build() {
