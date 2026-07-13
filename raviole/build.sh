@@ -634,7 +634,8 @@ generate_zip() {
         -x '*.git*/*' \
         -x '*.github*/*' \
         -x '*README.md*' \
-        -x '*.zip*' || {
+        -x '*.zip*' \
+        -x 'zipsigner*' || {
         cd "${KERNEL_DIR}"
         err "Failed to create unsigned zip"
     }
