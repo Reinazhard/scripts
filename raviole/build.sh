@@ -323,8 +323,8 @@ setup_environment() {
     # Spoof build date for release builds
     [ "${IS_RELEASE}" = "1" ] && export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-Wed Jan 28 05:34:14 UTC 2026}"
 
-    export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-nobody}"
-    export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-android-build}"
+    export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-build-user}"
+    export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-build-host}"
 
     # Parallel jobs
     PROCS=$(nproc --all)
