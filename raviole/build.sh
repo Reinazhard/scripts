@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/bin/sh
 # SPDX-License-Identifier: MIT
 #
 # Kernel build script for Google Tensor GS101 (Raviole: Pixel 6/6 Pro/6a)
 # Supports Standard and KernelSU build variants
 
-set -euo pipefail
+set -eu
 
 #==============================================================================
 # Environment configuration file
