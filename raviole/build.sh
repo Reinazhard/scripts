@@ -247,18 +247,18 @@ fetch_clang_toolchain() {
     fi
 
     msg "Downloading LLVM ${version}..."
-    mkdir -p "${clang_dir}"
 
     local tarball="llvm-${version}-x86_64.tar.xz"
     local url="${LLVM_BASE_URL}/${tarball}"
 
-    curl -fsSLo "${clang_dir}/${tarball}" "${url}"
+    curl -fsSLo "/tmp/${tarball}" "${url}"
     msg "Extracting LLVM toolchain..."
-    tar -xJf "${clang_dir}/${tarball}" -C "${clang_dir}"
-    rm -f "${clang_dir}/${tarball}"
+    tar -xJf "/tmp/${tarball}" -C "${KERNEL_DIR}"
+    rm -f "/tmp/${tarball}"
 
-    local inner_dir="${clang_dir}/llvm-${version}-x86_64"
+    local inner_dir="${KERNEL_DIR}/llvm-${version}-x86_64"
     if [ -d "${inner_dir}" ]; then
+        mkdir -p "${clang_dir}"
         mv "${inner_dir}"/* "${clang_dir}/"
         rm -rf "${inner_dir}"
     fi
