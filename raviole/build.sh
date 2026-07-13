@@ -68,7 +68,7 @@ MKDTIMG_URL="https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/mai
 MKDTIMG_FLAGS="--page_size=4096 --id=/:board_id --rev=/:board_rev"
 
 # GCC toolchain source
-GCC_REPO="Reinazhard/guacamole_coin_crisis"
+GCC_REPO="guacamole-sickness%2Fgs-infra%2Fgcc"
 
 # LLVM toolchain source
 LLVM_BASE_URL="https://www.kernel.org/pub/tools/llvm/files"
@@ -170,8 +170,8 @@ fetch_gcc_toolchain() {
     msg "Fetching latest GCC toolchain release..."
 
     local tag
-    tag=$(curl -fsSL "https://api.github.com/repos/${GCC_REPO}/releases/latest" \
-        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || true
+    tag=$(curl -fsSL "https://gitlab.com/api/v4/projects/${GCC_REPO}/releases" \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1) || true
 
     if [ -z "${tag}" ]; then
         err "Failed to fetch latest GCC toolchain tag"
@@ -190,8 +190,8 @@ fetch_gcc_toolchain() {
     mkdir -p "${gcc_dir}"
 
     local assets
-    assets=$(curl -fsSL "https://api.github.com/repos/${GCC_REPO}/releases/latest" \
-        | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    assets=$(curl -fsSL "https://gitlab.com/api/v4/projects/${GCC_REPO}/releases/${tag}" \
+        | sed -n 's/.*"direct_asset_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
     local arm64_url arm_url
     arm64_url=$(echo "${assets}" | grep 'toolchain-arm64-.*\.tar\.zst$' || true)
