@@ -39,7 +39,6 @@ format_duration() {
 
 readonly KERNEL_DIR="${PWD}"
 readonly KERNEL_BUILD_NUM_FILE="${KERNEL_DIR}/.build_number"
-readonly TOOLCHAIN_DIR="${KERNEL_DIR}/kernel-toolchain"
 
 # Device configuration (override via env)
 ZIPNAME="${ZIPNAME:-86hm}"
@@ -88,7 +87,7 @@ CI="${CI:-0}"
 [ "${CI}" != "0" ] && [ "${CI}" != "1" ] && err "CI must be 0 or 1, got: ${CI}"
 
 # CI=1 forces full release mode
-[ "${CI}" = "1" ] && { SIGN=1 RELEASE=1 CLEAN=1 LOG=1 NOTIFY=1; }
+[ "${CI}" = "1" ] && { SIGN=1; RELEASE=1; CLEAN=1; LOG=1; NOTIFY=1; }
 
 # Release mode: CI=1 or RELEASE=1
 IS_RELEASE=0
@@ -358,7 +357,11 @@ setup_environment() {
     msg "${build_label} | Kernel ${KERVER} | Branch: ${CI_BRANCH}"
     msg "Toolchain: ${TOOLCHAIN} | Compiler: ${KBUILD_COMPILER_STRING}"
     msg "Parallel jobs: ${PROCS}"
-    [ "${CLEAN}" = "1" ] && msg "Clean: Enabled" || msg "Clean: Disabled"
+    if [ "${CLEAN}" = "1" ]; then
+        msg "Clean: Enabled"
+    else
+        msg "Clean: Disabled"
+    fi
 }
 
 #==============================================================================
@@ -670,7 +673,8 @@ generate_zip() {
     local build_info="Build #${KERNEL_BUILD_NUM}"
     [ "${IS_RELEASE}" = "1" ] && build_info="Release"
 
-    local caption="✅ ${variant} completed in $(format_duration ${BUILD_DURATION}) | <code>${build_info}</code>"
+    local caption
+    caption="✅ ${variant} completed in $(format_duration ${BUILD_DURATION}) | <code>${build_info}</code>"
     tg_post_build "${zip_final_path}" "${caption}"
 
     msg "Flashable zip: ${zip_final_path}"
@@ -694,7 +698,11 @@ build_variant() {
 
     local zip_suffix=""
     [ "${is_ksu}" = "1" ] && zip_suffix="ksu-"
-    [ "${IS_RELEASE}" = "1" ] && zip_suffix="${zip_suffix}release" || zip_suffix="${zip_suffix}test"
+    if [ "${IS_RELEASE}" = "1" ]; then
+        zip_suffix="${zip_suffix}release"
+    else
+        zip_suffix="${zip_suffix}test"
+    fi
 
     local build_title="${variant} Build #${KERNEL_BUILD_NUM}"
     [ "${IS_RELEASE}" = "1" ] && build_title="${variant} Release Build"
