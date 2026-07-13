@@ -431,10 +431,10 @@ clean_build() {
     msg "Build environment cleaned"
 }
 
-on_error() {
+on_exit() {
     local exit_code=$?
-    local line=$1
-    [[ ${exit_code} -ne 0 ]] && tg_notify_failure "Build" "failed at line ${line} (exit code: ${exit_code})"
+    cd "${KERNEL_DIR}"
+    [[ ${exit_code} -ne 0 ]] && tg_notify_failure "Build" "failed (exit code: ${exit_code})"
     exit "${exit_code}"
 }
 
@@ -725,7 +725,7 @@ build_variant() {
 #==============================================================================
 
 main() {
-    trap 'on_error ${LINENO}' ERR
+    trap on_exit EXIT
 
     msg "========================================"
     [[ "${IS_RELEASE}" == "1" ]] && msg "  RELEASE BUILD MODE"
