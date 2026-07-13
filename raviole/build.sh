@@ -556,7 +556,7 @@ generate_dtbo() {
 
     cd "${KERNEL_DIR}"
     # shellcheck disable=SC2086
-    ./mkdtimg create dtbo.img ${MKDTIMG_FLAGS} "${dtbo_files[@]}" || {
+    ./mkdtimg create "${OUT_DIR}/dtbo.img" ${MKDTIMG_FLAGS} "${dtbo_files[@]}" || {
         err "Failed to generate dtbo.img"
     }
 
@@ -598,7 +598,7 @@ generate_zip() {
         err "Failed to create DTB file"
     }
 
-    cp "${KERNEL_DIR}/dtbo.img" "${AK3_DTBO}" || {
+    cp "${OUT_DIR}/dtbo.img" "${AK3_DTBO}" || {
         err "Failed to copy dtbo.img to AnyKernel3"
     }
 
@@ -701,7 +701,7 @@ build_variant() {
 
     msg "Cleaning up dtbo artifacts..."
     find "${OUT_DIR}" -name 'gs*.dtbo' -delete
-    rm -f "${KERNEL_DIR}/dtbo.img"
+    rm -f "${OUT_DIR}/dtbo.img"
 
     msg "${variant} build complete"
 }
