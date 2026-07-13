@@ -177,7 +177,7 @@ fetch_gcc_toolchain() {
     msg "Latest GCC toolchain: ${tag}"
 
     local gcc_dir="${KERNEL_DIR}/gcc-${tag}"
-    if [[ -d "${gcc_dir}" ]]; then
+    if [[ -f "${gcc_dir}/.done" ]]; then
         msg "GCC toolchain already cached: ${gcc_dir}"
         GCC_TOOLCHAIN_DIR="${gcc_dir}"
         return 0
@@ -212,6 +212,7 @@ fetch_gcc_toolchain() {
         rm -f "${gcc_dir}/arm.tar.zst"
     fi
 
+    touch "${gcc_dir}/.done"
     GCC_TOOLCHAIN_DIR="${gcc_dir}"
     msg "GCC toolchain installed: ${gcc_dir}"
 }
@@ -236,7 +237,7 @@ fetch_clang_toolchain() {
     msg "Latest LLVM: ${version}"
 
     local clang_dir="${KERNEL_DIR}/llvm-${version}"
-    if [[ -d "${clang_dir}" ]]; then
+    if [[ -f "${clang_dir}/.done" ]]; then
         msg "LLVM toolchain already cached: ${clang_dir}"
         CLANG_TOOLCHAIN_DIR="${clang_dir}"
         return 0
@@ -259,6 +260,7 @@ fetch_clang_toolchain() {
         rm -rf "${inner_dir}"
     fi
 
+    touch "${clang_dir}/.done"
     CLANG_TOOLCHAIN_DIR="${clang_dir}"
     msg "LLVM toolchain installed: ${clang_dir}"
 }
