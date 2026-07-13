@@ -730,14 +730,6 @@ build_variant() {
 main() {
     trap on_exit EXIT
 
-    # Build log handling: LOG=1 saves output to timestamped file
-    if [ "${LOG}" = "1" ]; then
-        mkdir -p "${OUT_DIR:-/dev/null}"
-        LOG_FILE="${OUT_DIR:-.}/build-$(date +%Y%m%d-%H%M%S).log"
-        exec > >(tee -a "${LOG_FILE}") 2>&1
-        msg "Build log: ${LOG_FILE}"
-    fi
-
     msg "========================================"
     [ "${IS_RELEASE}" = "1" ] && msg "  RELEASE BUILD MODE"
     msg "  Raviole Kernel Build System"
@@ -762,4 +754,11 @@ main() {
     msg "========================================"
 }
 
-main "$@"
+# Build log handling: LOG=1 saves output to timestamped file
+if [ "${LOG}" = "1" ]; then
+    mkdir -p "${OUT_DIR:-/dev/null}"
+    LOG_FILE="${OUT_DIR:-.}/build-$(date +%Y%m%d-%H%M%S).log"
+    main "$@" 2>&1 | tee -a "${LOG_FILE}"
+else
+    main "$@"
+fi
