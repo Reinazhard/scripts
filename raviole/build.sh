@@ -50,7 +50,7 @@ DEFCONFIG="${DEFCONFIG:-raviole_defconfig}"
 KERNEL_IMAGE="${KERNEL_IMAGE:-Image.lz4}"
 
 # Device tree files (override via env)
-DTB_FILES=($(echo "${DTB_FILES:-gs101-a0.dtb gs101-b0.dtb}"))
+readarray -t DTB_FILES <<< "${DTB_FILES:-gs101-a0.dtb gs101-b0.dtb}"
 
 # Toolchain selection: gcc or clang (override via env)
 TOOLCHAIN="${TOOLCHAIN:-clang}"
