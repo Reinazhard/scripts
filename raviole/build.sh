@@ -477,7 +477,6 @@ configure_kernel() {
     msg "Configuring ${variant} kernel..."
 
     make_kernel "${DEFCONFIG}" > /dev/null 2>&1 || {
-        tg_notify_failure "${variant}" "defconfig generation failed"
         err "Failed to generate ${DEFCONFIG}"
     }
 
@@ -485,13 +484,11 @@ configure_kernel() {
         msg "Enabling KernelSU features..."
         scripts/config --file "${OUT_DIR}/.config" \
             -e KSU || {
-            tg_notify_failure "${variant}" "KernelSU config failed"
             err "Failed to enable KernelSU features"
         }
     fi
 
     make_kernel olddefconfig > /dev/null 2>&1 || {
-        tg_notify_failure "${variant}" "olddefconfig failed"
         err "Failed to finalize configuration"
     }
 
@@ -512,7 +509,6 @@ compile_kernel() {
     else
         end=$(date +"%s")
         BUILD_DURATION=$((end - start))
-        tg_notify_failure "${variant}" "compilation failed after $(format_duration ${BUILD_DURATION})"
         err "${variant} kernel compilation failed"
     fi
 }
@@ -522,13 +518,11 @@ verify_build_outputs() {
     msg "Verifying build outputs..."
 
     [[ -f "${IMAGE_PATH}" ]] || {
-        tg_notify_failure "${variant}" "${KERNEL_IMAGE} not found"
         err "${KERNEL_IMAGE} not found at ${IMAGE_PATH}"
     }
 
     for dtb in "${DTB_PATHS[@]}"; do
         [[ -f "${dtb}" ]] || {
-            tg_notify_failure "${variant}" "DTB files not found"
             err "DTB files not found: ${dtb}"
         }
     done
@@ -547,7 +541,6 @@ generate_dtbo() {
     if [[ ! -f "${KERNEL_DIR}/mkdtimg" ]]; then
         msg "Downloading mkdtimg..."
         curl -fsSLo "${KERNEL_DIR}/mkdtimg" "${MKDTIMG_URL}" || {
-            tg_notify_failure "${variant}" "mkdtimg download failed"
             err "Failed to download mkdtimg"
         }
     fi
@@ -558,14 +551,12 @@ generate_dtbo() {
     dtbo_files=( $(find "${OUT_DIR}" -name 'gs*.dtbo' | sort) )
 
     [[ ${#dtbo_files[@]} -eq 0 ]] && {
-        tg_notify_failure "${variant}" "no dtbo files found"
         err "No gs*.dtbo files found in ${OUT_DIR}"
     }
 
     cd "${KERNEL_DIR}"
     # shellcheck disable=SC2086
     ./mkdtimg create dtbo.img ${MKDTIMG_FLAGS} "${dtbo_files[@]}" || {
-        tg_notify_failure "${variant}" "dtbo.img generation failed"
         err "Failed to generate dtbo.img"
     }
 
@@ -600,17 +591,14 @@ generate_zip() {
     msg "Packaging ${variant} flashable zip: ${zip_final}"
 
     cp "${IMAGE_PATH}" "${AK3_IMAGE}" || {
-        tg_notify_failure "${variant}" "failed to copy kernel image"
         err "Failed to copy ${KERNEL_IMAGE} to AnyKernel3"
     }
 
     cat "${DTB_PATHS[@]}" > "${AK3_DTB}" || {
-        tg_notify_failure "${variant}" "failed to concatenate DTBs"
         err "Failed to create DTB file"
     }
 
     cp "${KERNEL_DIR}/dtbo.img" "${AK3_DTBO}" || {
-        tg_notify_failure "${variant}" "failed to copy dtbo.img"
         err "Failed to copy dtbo.img to AnyKernel3"
     }
 
@@ -625,7 +613,6 @@ generate_zip() {
         -x '*.zip*' \
         -x '*zipsigner-3.0.jar*' || {
         cd "${KERNEL_DIR}"
-        tg_notify_failure "${variant}" "zip creation failed"
         err "Failed to create unsigned zip"
     }
 
@@ -633,7 +620,6 @@ generate_zip() {
     msg "Validating zip integrity..."
     if ! zip -T "unsigned.zip" > /dev/null 2>&1; then
         cd "${KERNEL_DIR}"
-        tg_notify_failure "${variant}" "zip validation failed"
         err "Zip validation failed"
     fi
 
@@ -644,7 +630,6 @@ generate_zip() {
             curl -fsSLo zipsigner-3.0.jar \
                 "https://raw.githubusercontent.com/raphielscape/scripts/master/zipsigner-3.0.jar" || {
                 cd "${KERNEL_DIR}"
-                tg_notify_failure "${variant}" "zipsigner download failed"
                 err "Failed to download zipsigner"
             }
         fi
@@ -654,7 +639,6 @@ generate_zip() {
 
         if [[ ! -f "${zip_final}" ]]; then
             cd "${KERNEL_DIR}"
-            tg_notify_failure "${variant}" "zip signing failed"
             err "Failed to sign zip"
         fi
         rm -f unsigned.zip
