@@ -687,7 +687,7 @@ build_variant() {
 
     local zip_suffix=""
     [[ "${is_ksu}" == "1" ]] && zip_suffix="ksu-"
-    [[ "${IS_RELEASE}" == "1" ]] && zip_suffix="${zip_suffix}RELEASE" || zip_suffix="${zip_suffix}TEST"
+    [[ "${IS_RELEASE}" == "1" ]] && zip_suffix="${zip_suffix}release" || zip_suffix="${zip_suffix}test"
 
     local build_title="${variant} Build #${KERNEL_BUILD_NUM}"
     [[ "${IS_RELEASE}" == "1" ]] && build_title="${variant} Release Build"
