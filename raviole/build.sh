@@ -259,6 +259,7 @@ fetch_clang_toolchain() {
     rm -f "/tmp/${tarball}"
 
     local inner_dir="${tmpdir}/llvm-${version}-x86_64"
+    rm -rf "${clang_dir}"
     if [ -d "${inner_dir}" ]; then
         mv "${inner_dir}" "${clang_dir}"
     else
