@@ -635,7 +635,10 @@ generate_zip() {
         fi
 
         msg "Signing ${zip_final}..."
-        java -jar zipsigner-3.0.jar unsigned.zip "${zip_final}" 2>&1 | grep -v "^$" || true
+        if ! java -jar zipsigner-3.0.jar unsigned.zip "${zip_final}"; then
+            cd "${KERNEL_DIR}"
+            err "Failed to sign zip"
+        fi
 
         if [[ ! -f "${zip_final}" ]]; then
             cd "${KERNEL_DIR}"
