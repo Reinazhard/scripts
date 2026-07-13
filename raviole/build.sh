@@ -610,8 +610,7 @@ generate_zip() {
         -x '*.git*/*' \
         -x '*.github*/*' \
         -x '*README.md*' \
-        -x '*.zip*' \
-        -x '*zipsigner-3.0.jar*' || {
+        -x '*.zip*' || {
         cd "${KERNEL_DIR}"
         err "Failed to create unsigned zip"
     }
@@ -625,9 +624,9 @@ generate_zip() {
 
     local zip_final_path
     if [[ "${SIGN}" == "1" ]]; then
-        if [[ ! -f "zipsigner-3.0.jar" ]]; then
+        if [[ ! -f "${KERNEL_DIR}/zipsigner-3.0.jar" ]]; then
             msg "Downloading zipsigner..."
-            curl -fsSLo zipsigner-3.0.jar \
+            curl -fsSLo "${KERNEL_DIR}/zipsigner-3.0.jar" \
                 "https://raw.githubusercontent.com/raphielscape/scripts/master/zipsigner-3.0.jar" || {
                 cd "${KERNEL_DIR}"
                 err "Failed to download zipsigner"
@@ -635,7 +634,7 @@ generate_zip() {
         fi
 
         msg "Signing ${zip_final}..."
-        if ! java -jar zipsigner-3.0.jar unsigned.zip "${zip_final}"; then
+        if ! java -jar "${KERNEL_DIR}/zipsigner-3.0.jar" unsigned.zip "${zip_final}"; then
             cd "${KERNEL_DIR}"
             err "Failed to sign zip"
         fi
