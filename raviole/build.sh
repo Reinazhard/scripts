@@ -167,7 +167,7 @@ fetch_gcc_toolchain() {
     msg "Fetching latest GCC toolchain release..."
 
     local tag
-    tag=$(curl -sL "https://api.github.com/repos/${GCC_REPO}/releases/latest" \
+    tag=$(curl -fsSL "https://api.github.com/repos/${GCC_REPO}/releases/latest" \
         | grep -oP '"tag_name":\s*"\K[^"]+') || true
 
     if [[ -z "${tag}" ]]; then
@@ -187,7 +187,7 @@ fetch_gcc_toolchain() {
     mkdir -p "${gcc_dir}"
 
     local assets
-    assets=$(curl -sL "https://api.github.com/repos/${GCC_REPO}/releases/latest" \
+    assets=$(curl -fsSL "https://api.github.com/repos/${GCC_REPO}/releases/latest" \
         | grep -oP '"browser_download_url":\s*"\K[^"]+')
 
     local arm64_url arm_url
@@ -199,14 +199,14 @@ fetch_gcc_toolchain() {
     fi
 
     msg "Downloading arm64 GCC toolchain..."
-    curl -sLo "${gcc_dir}/arm64.tar.zst" "${arm64_url}"
+    curl -fsSLo "${gcc_dir}/arm64.tar.zst" "${arm64_url}"
     msg "Extracting arm64 GCC toolchain..."
     tar -I zstd -xf "${gcc_dir}/arm64.tar.zst" -C "${gcc_dir}"
     rm -f "${gcc_dir}/arm64.tar.zst"
 
     if [[ -n "${arm_url}" ]]; then
         msg "Downloading arm32 GCC toolchain..."
-        curl -sLo "${gcc_dir}/arm.tar.zst" "${arm_url}"
+        curl -fsSLo "${gcc_dir}/arm.tar.zst" "${arm_url}"
         msg "Extracting arm32 GCC toolchain..."
         tar -I zstd -xf "${gcc_dir}/arm.tar.zst" -C "${gcc_dir}"
         rm -f "${gcc_dir}/arm.tar.zst"
@@ -224,7 +224,7 @@ fetch_clang_toolchain() {
     msg "Fetching latest LLVM toolchain..."
 
     local version
-    version=$(curl -sL "${LLVM_BASE_URL}/" \
+    version=$(curl -fsSL "${LLVM_BASE_URL}/" \
         | grep -oP 'llvm-\K[0-9]+\.[0-9]+\.[0-9]+(?=-x86_64\.tar\.xz)' \
         | sort -t. -k1,1V -k2,2n -k3,3n \
         | tail -n1) || true
@@ -248,7 +248,7 @@ fetch_clang_toolchain() {
     local tarball="llvm-${version}-x86_64.tar.xz"
     local url="${LLVM_BASE_URL}/${tarball}"
 
-    curl -sLo "${clang_dir}/${tarball}" "${url}"
+    curl -fsSLo "${clang_dir}/${tarball}" "${url}"
     msg "Extracting LLVM toolchain..."
     tar -xJf "${clang_dir}/${tarball}" -C "${clang_dir}"
     rm -f "${clang_dir}/${tarball}"
@@ -318,6 +318,9 @@ setup_environment() {
     # Spoof build date for release builds
     [[ "${IS_RELEASE}" == "1" ]] && export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-Wed Jan 28 05:34:14 UTC 2026}"
 
+    export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-nobody}"
+    export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-android-build}"
+
     # Parallel jobs
     PROCS=$(nproc --all)
     export PROCS
@@ -382,7 +385,7 @@ tg_post_build() {
 
     for attempt in $(seq 1 ${max_attempts}); do
         msg "Upload attempt ${attempt}/${max_attempts}..."
-        if curl --progress-bar --max-time 300 \
+        if curl -f --progress-bar --max-time 300 \
             -F document=@"${file}" \
             -F chat_id="${CHATID}" \
             -F "disable_web_page_preview=true" \
@@ -541,7 +544,7 @@ generate_dtbo() {
 
     if [[ ! -f "${KERNEL_DIR}/mkdtimg" ]]; then
         msg "Downloading mkdtimg..."
-        curl -sLo "${KERNEL_DIR}/mkdtimg" "${MKDTIMG_URL}" || {
+        curl -fsSLo "${KERNEL_DIR}/mkdtimg" "${MKDTIMG_URL}" || {
             tg_notify_failure "${variant}" "mkdtimg download failed"
             err "Failed to download mkdtimg"
         }
@@ -636,7 +639,7 @@ generate_zip() {
     if [[ "${SIGN}" == "1" ]]; then
         if [[ ! -f "zipsigner-3.0.jar" ]]; then
             msg "Downloading zipsigner..."
-            curl -sLo zipsigner-3.0.jar \
+            curl -fsSLo zipsigner-3.0.jar \
                 "https://raw.githubusercontent.com/raphielscape/scripts/master/zipsigner-3.0.jar" || {
                 cd "${KERNEL_DIR}"
                 tg_notify_failure "${variant}" "zipsigner download failed"
