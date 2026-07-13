@@ -476,7 +476,7 @@ configure_kernel() {
     local variant="$1"
     msg "Configuring ${variant} kernel..."
 
-    make_kernel "${DEFCONFIG}" > /dev/null 2>&1 || {
+    make_kernel "${DEFCONFIG}" > /dev/null || {
         err "Failed to generate ${DEFCONFIG}"
     }
 
@@ -488,7 +488,7 @@ configure_kernel() {
         }
     fi
 
-    make_kernel olddefconfig > /dev/null 2>&1 || {
+    make_kernel olddefconfig > /dev/null || {
         err "Failed to finalize configuration"
     }
 
