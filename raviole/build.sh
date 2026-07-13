@@ -172,7 +172,7 @@ fetch_gcc_toolchain() {
 
     local tag
     tag=$(curl -fsSL "https://api.github.com/repos/${GCC_REPO}/releases/latest" \
-        | grep -oP '"tag_name":\s*"\K[^"]+') || true
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || true
 
     if [ -z "${tag}" ]; then
         err "Failed to fetch latest GCC toolchain tag"
@@ -192,7 +192,7 @@ fetch_gcc_toolchain() {
 
     local assets
     assets=$(curl -fsSL "https://api.github.com/repos/${GCC_REPO}/releases/latest" \
-        | grep -oP '"browser_download_url":\s*"\K[^"]+')
+        | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
     local arm64_url arm_url
     arm64_url=$(echo "${assets}" | grep 'toolchain-arm64-.*\.tar\.zst$' || true)
@@ -230,7 +230,7 @@ fetch_clang_toolchain() {
 
     local version
     version=$(curl -fsSL "${LLVM_BASE_URL}/" \
-        | grep -oP 'llvm-\K[0-9]+\.[0-9]+\.[0-9]+(?=-x86_64\.tar\.xz)' \
+        | sed -n 's/.*llvm-\([0-9]*\.[0-9]*\.[0-9]*\)-x86_64\.tar\.xz.*/\1/p' \
         | sort -t. -k1,1V -k2,2n -k3,3n \
         | tail -n1) || true
 
