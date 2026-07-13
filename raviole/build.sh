@@ -120,10 +120,11 @@ readonly OUT_DIR
 
 # Build artifact paths
 IMAGE_PATH="${OUT_DIR}/arch/arm64/boot/${KERNEL_IMAGE}"
-DTB_PATHS=()
-for dtb in "${DTB_FILES[@]}"; do
-    DTB_PATHS+=("${OUT_DIR}/google-devices/raviole/dts/gs101/${dtb}")
+DTB_PATHS=""
+for dtb in ${DTB_FILES}; do
+    DTB_PATHS="${DTB_PATHS} ${OUT_DIR}/google-devices/raviole/dts/gs101/${dtb}"
 done
+DTB_PATHS="${DTB_PATHS# }"
 
 # AnyKernel3 paths
 AK3_IMAGE="${AK3_DIR}/${KERNEL_IMAGE}"
@@ -138,27 +139,27 @@ BUILD_DURATION=0
 #==============================================================================
 
 check_dependencies() {
-    local missing=()
-    local deps=(git make curl unzip zip)
+    local missing=""
+    local deps="git make curl unzip zip"
 
     if [ "${TOOLCHAIN}" = "gcc" ]; then
-        deps+=(xz zstd)
+        deps="${deps} xz zstd"
     else
-        deps+=(xz)
+        deps="${deps} xz"
     fi
 
     if [ "${SIGN}" = "1" ]; then
-        deps+=(java)
+        deps="${deps} java"
     fi
 
-    for cmd in "${deps[@]}"; do
+    for cmd in ${deps}; do
         if ! command -v "${cmd}" > /dev/null 2>&1; then
-            missing+=("${cmd}")
+            missing="${missing} ${cmd}"
         fi
     done
 
-    if [ ${#missing[@]} -gt 0 ]; then
-        err "Missing dependencies: ${missing[*]}"
+    if [ -n "${missing}" ]; then
+        err "Missing dependencies:${missing}"
     fi
 }
 
@@ -468,20 +469,20 @@ compute_localversion() {
 #==============================================================================
 
 make_kernel() {
-    local make_args=(-j"${PROCS}" O="${OUT_DIR}" ARCH="${ARCH}")
+    local make_args="-j${PROCS} O=${OUT_DIR} ARCH=${ARCH}"
 
     case "${TOOLCHAIN}" in
         clang)
-            make_args+=(LLVM="${CLANG_TOOLCHAIN_DIR}/bin/" LLVM_IAS=1)
+            make_args="${make_args} LLVM=${CLANG_TOOLCHAIN_DIR}/bin/ LLVM_IAS=1"
             ;;
         gcc)
-            make_args+=(CC="${CROSS_COMPILE}gcc")
+            make_args="${make_args} CC=${CROSS_COMPILE}gcc"
             ;;
     esac
 
-    make "${make_args[@]}" \
-        LOCALVERSION="${LOCALVERSION}" \
-        KBUILD_BUILD_VERSION="${KERNEL_BUILD_NUM}" \
+    eval make ${make_args} \
+        LOCALVERSION=\"${LOCALVERSION}\" \
+        KBUILD_BUILD_VERSION=\"${KERNEL_BUILD_NUM}\" \
         "$@"
 }
 
@@ -530,12 +531,12 @@ verify_build_outputs() {
     local variant="$1"
     msg "Verifying build outputs..."
 
-    -f "${IMAGE_PATH}" ] || {
+    [ -f "${IMAGE_PATH}" ] || {
         err "${KERNEL_IMAGE} not found at ${IMAGE_PATH}"
     }
 
-    for dtb in "${DTB_PATHS[@]}"; do
-        -f "${dtb}" ] || {
+    for dtb in ${DTB_PATHS}; do
+        [ -f "${dtb}" ] || {
             err "DTB files not found: ${dtb}"
         }
     done
@@ -560,20 +561,19 @@ generate_dtbo() {
     chmod +x "${KERNEL_DIR}/mkdtimg"
 
     local dtbo_files
-    # shellcheck disable=SC2207
-    dtbo_files=( $(find "${OUT_DIR}" -name 'gs*.dtbo' | sort) )
+    dtbo_files=$(find "${OUT_DIR}" -name 'gs*.dtbo' | sort)
 
-    [ ${#dtbo_files[@]} -eq 0 ] && {
+    if [ -z "${dtbo_files}" ]; then
         err "No gs*.dtbo files found in ${OUT_DIR}"
-    }
+    fi
 
     cd "${KERNEL_DIR}"
     # shellcheck disable=SC2086
-    ./mkdtimg create "${OUT_DIR}/dtbo.img" ${MKDTIMG_FLAGS} "${dtbo_files[@]}" || {
+    ./mkdtimg create "${OUT_DIR}/dtbo.img" ${MKDTIMG_FLAGS} ${dtbo_files} || {
         err "Failed to generate dtbo.img"
     }
 
-    msg "dtbo.img generated (${#dtbo_files[@]} dtbo file(s))"
+    msg "dtbo.img generated ($(echo ${dtbo_files} | wc -w) dtbo file(s))"
 }
 
 #==============================================================================
@@ -607,7 +607,7 @@ generate_zip() {
         err "Failed to copy ${KERNEL_IMAGE} to AnyKernel3"
     }
 
-    cat "${DTB_PATHS[@]}" > "${AK3_DTB}" || {
+    cat ${DTB_PATHS} > "${AK3_DTB}" || {
         err "Failed to create DTB file"
     }
 
