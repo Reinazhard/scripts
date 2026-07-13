@@ -13,10 +13,10 @@ set -eu
 ENV_FILE="${PWD}/build.env"
 
 if [[ -f "${ENV_FILE}" ]]; then
-    echo -e "\e[1;32m[*]\e[0m Loading build.env configuration"
+    printf '\033[1;32m[*]\033[0m Loading build.env configuration\n'
     set -a
     # shellcheck source=/dev/null
-    source "${ENV_FILE}"
+    . "${ENV_FILE}"
     set +a
 fi
 
@@ -24,9 +24,9 @@ fi
 # Logging and utilities
 #==============================================================================
 
-msg()  { echo -e "\e[1;32m[*]\e[0m $*"; }
-warn() { echo -e "\e[1;33m[!]\e[0m $*" >&2; }
-err()  { echo -e "\e[1;31m[ERROR]\e[0m $*" >&2; exit 1; }
+msg()  { printf '\033[1;32m[*]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
+err()  { printf '\033[1;31m[ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 format_duration() {
     local seconds="$1"
@@ -149,7 +149,7 @@ check_dependencies() {
     fi
 
     for cmd in "${deps[@]}"; do
-        if ! command -v "${cmd}" &> /dev/null; then
+        if ! command -v "${cmd}" > /dev/null 2>&1; then
             missing+=("${cmd}")
         fi
     done
