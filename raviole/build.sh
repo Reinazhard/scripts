@@ -369,12 +369,13 @@ tg_post_msg() {
     local message="$1"
 
     [ "${NOTIFY}" != "1" ] && return 0
-    -z "${TELEGRAM_TOKEN:-}" ] && warn "TELEGRAM_TOKEN not set, skipping notification" && return 0
+    [ -z "${TELEGRAM_TOKEN:-}" ] && warn "TELEGRAM_TOKEN not set, skipping notification" && return 0
 
     local max_attempts=3
     local wait_time=2
+    local attempt=1
 
-    for attempt in $(seq 1 ${max_attempts}); do
+    while [ "${attempt}" -le "${max_attempts}" ]; do
         if curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
             -d chat_id="${CHATID}" \
             -d "disable_web_page_preview=true" \
@@ -382,8 +383,9 @@ tg_post_msg() {
             -d text="${message}" > /dev/null 2>&1; then
             return 0
         fi
-        [ ${attempt} -lt ${max_attempts} ] && sleep ${wait_time}
+        [ "${attempt}" -lt "${max_attempts}" ] && sleep "${wait_time}"
         wait_time=$((wait_time * 2))
+        attempt=$((attempt + 1))
     done
     warn "Failed to send Telegram message after ${max_attempts} attempts"
 }
@@ -393,13 +395,14 @@ tg_post_build() {
     local caption="$2"
 
     [ "${NOTIFY}" != "1" ] && return 0
-    -z "${TELEGRAM_TOKEN:-}" ] && warn "TELEGRAM_TOKEN not set, skipping upload" && return 0
+    [ -z "${TELEGRAM_TOKEN:-}" ] && warn "TELEGRAM_TOKEN not set, skipping upload" && return 0
 
     msg "Uploading to Telegram..."
     local max_attempts=5
     local wait_time=5
+    local attempt=1
 
-    for attempt in $(seq 1 ${max_attempts}); do
+    while [ "${attempt}" -le "${max_attempts}" ]; do
         msg "Upload attempt ${attempt}/${max_attempts}..."
         if curl -f --progress-bar --max-time 300 \
             -F document=@"${file}" \
@@ -411,8 +414,9 @@ tg_post_build() {
             msg "Upload successful!"
             return 0
         fi
-        [ ${attempt} -lt ${max_attempts} ] && warn "Upload failed, retrying in ${wait_time}s..." && sleep ${wait_time}
+        [ "${attempt}" -lt "${max_attempts}" ] && warn "Upload failed, retrying in ${wait_time}s..." && sleep "${wait_time}"
         wait_time=$((wait_time * 2))
+        attempt=$((attempt + 1))
     done
     err "Failed to upload after ${max_attempts} attempts"
 }
