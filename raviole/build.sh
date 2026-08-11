@@ -5,6 +5,7 @@
 # Supports Standard and KernelSU build variants
 
 set -eu
+set -o pipefail
 
 #==============================================================================
 # Environment configuration file
@@ -72,6 +73,11 @@ GCC_REPO="guacamole-sickness%2Fgs-infra%2Fgcc"
 
 # LLVM toolchain source
 LLVM_BASE_URL="https://www.kernel.org/pub/tools/llvm/files"
+# Pin a specific LLVM version (override via env). Empty = use latest.
+LLVM_VERSION="${LLVM_VERSION:-}"
+
+# Spoofed kernel build date for release/CI builds (override via env)
+KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-Wed Jan 28 05:34:14 UTC 2026}"
 
 # Build behavior (override via env)
 CLEAN="${CLEAN:-0}"
@@ -91,7 +97,9 @@ CI="${CI:-0}"
 
 # Release mode: CI=1 or RELEASE=1
 IS_RELEASE=0
-[ "${CI}" = "1" ] || [ "${RELEASE}" = "1" ] && IS_RELEASE=1
+if [ "${CI}" = "1" ] || [ "${RELEASE}" = "1" ]; then
+    IS_RELEASE=1
+fi
 
 # Validate config
 [ "${CLEAN}" != "0" ] && [ "${CLEAN}" != "1" ] && err "CLEAN must be 0 or 1, got: ${CLEAN}"
@@ -202,16 +210,24 @@ fetch_gcc_toolchain() {
     fi
 
     msg "Downloading arm64 GCC toolchain..."
-    curl -fsSLo "${gcc_dir}/arm64.tar.zst" "${arm64_url}"
+    if ! curl -fsSLo "${gcc_dir}/arm64.tar.zst" "${arm64_url}"; then
+        err "Failed to download arm64 GCC toolchain"
+    fi
     msg "Extracting arm64 GCC toolchain..."
-    tar -I zstd -xf "${gcc_dir}/arm64.tar.zst" -C "${gcc_dir}"
+    if ! tar -I zstd -xf "${gcc_dir}/arm64.tar.zst" -C "${gcc_dir}"; then
+        err "Failed to extract arm64 GCC toolchain"
+    fi
     rm -f "${gcc_dir}/arm64.tar.zst"
 
     if [ -n "${arm_url}" ]; then
         msg "Downloading arm32 GCC toolchain..."
-        curl -fsSLo "${gcc_dir}/arm.tar.zst" "${arm_url}"
+        if ! curl -fsSLo "${gcc_dir}/arm.tar.zst" "${arm_url}"; then
+            err "Failed to download arm32 GCC toolchain"
+        fi
         msg "Extracting arm32 GCC toolchain..."
-        tar -I zstd -xf "${gcc_dir}/arm.tar.zst" -C "${gcc_dir}"
+        if ! tar -I zstd -xf "${gcc_dir}/arm.tar.zst" -C "${gcc_dir}"; then
+            err "Failed to extract arm32 GCC toolchain"
+        fi
         rm -f "${gcc_dir}/arm.tar.zst"
     fi
 
@@ -227,14 +243,17 @@ fetch_gcc_toolchain() {
 fetch_clang_toolchain() {
     msg "Fetching latest LLVM toolchain..."
 
-    local version
-    version=$(curl -fsSL "${LLVM_BASE_URL}/" \
-        | sed -n 's/.*llvm-\([0-9]*\.[0-9]*\.[0-9]*\)-x86_64\.tar\.xz.*/\1/p' \
-        | sort -t. -k1,1V -k2,2n -k3,3n \
-        | tail -n1) || true
+    local version="${LLVM_VERSION}"
 
     if [ -z "${version}" ]; then
-        err "Failed to fetch latest LLVM version"
+        version=$(curl -fsSL "${LLVM_BASE_URL}/" \
+            | sed -n 's/.*llvm-\([0-9]*\.[0-9]*\.[0-9]*\)-x86_64\.tar\.xz.*/\1/p' \
+            | sort -t. -k1,1V -k2,2n -k3,3n \
+            | tail -n1) || true
+    fi
+
+    if [ -z "${version}" ]; then
+        err "Failed to determine LLVM version (set LLVM_VERSION to pin one)"
     fi
 
     msg "Latest LLVM: ${version}"
@@ -252,10 +271,14 @@ fetch_clang_toolchain() {
     local url="${LLVM_BASE_URL}/${tarball}"
     local tmpdir="/tmp/llvm-extract.$$"
 
-    curl -fsSLo "/tmp/${tarball}" "${url}"
+    if ! curl -fsSLo "/tmp/${tarball}" "${url}"; then
+        err "Failed to download LLVM ${version}"
+    fi
     msg "Extracting LLVM toolchain..."
     mkdir -p "${tmpdir}"
-    tar -xJf "/tmp/${tarball}" -C "${tmpdir}"
+    if ! tar -xJf "/tmp/${tarball}" -C "${tmpdir}"; then
+        err "Failed to extract LLVM ${version}"
+    fi
     rm -f "/tmp/${tarball}"
 
     local inner_dir="${tmpdir}/llvm-${version}-x86_64"
@@ -301,15 +324,19 @@ setup_environment() {
     # Setup AnyKernel3
     if [ ! -d "${AK3_DIR}" ]; then
         msg "Cloning AnyKernel3 from ${AK3_REPO}..."
-        git clone "https://github.com/${AK3_REPO}.git" \
-            --single-branch --depth 1 "${AK3_DIR}" || err "Failed to clone AnyKernel3"
+        if ! git clone "https://github.com/${AK3_REPO}.git" \
+            --single-branch --depth 1 "${AK3_DIR}"; then
+            err "Failed to clone AnyKernel3"
+        fi
     fi
 
     # Setup KernelSU
     if [ ! -d "${KSU_DIR}" ]; then
         msg "Cloning KernelSU from ${KSU_REPO}..."
-        git clone "https://github.com/${KSU_REPO}.git" \
-            -b "${KSU_BRANCH}" --single-branch --depth 1 "${KSU_DIR}" || err "Failed to clone KernelSU"
+        if ! git clone "https://github.com/${KSU_REPO}.git" \
+            -b "${KSU_BRANCH}" --single-branch --depth 1 "${KSU_DIR}"; then
+            err "Failed to clone KernelSU"
+        fi
     fi
 
     # Architecture
@@ -325,7 +352,7 @@ setup_environment() {
     export KBUILD_COMPILER_STRING
 
     # Spoof build date for release builds
-    [ "${IS_RELEASE}" = "1" ] && export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-Wed Jan 28 05:34:14 UTC 2026}"
+    [ "${IS_RELEASE}" = "1" ] && export KBUILD_BUILD_TIMESTAMP
 
     export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-build-user}"
     export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-build-host}"
@@ -425,7 +452,8 @@ tg_post_build() {
         wait_time=$((wait_time * 2))
         attempt=$((attempt + 1))
     done
-    err "Failed to upload after ${max_attempts} attempts"
+    warn "Failed to upload after ${max_attempts} attempts (build artifact is at: ${file})"
+    return 1
 }
 
 tg_notify_failure() {
@@ -470,6 +498,9 @@ on_exit() {
 compute_localversion() {
     local variant="$1"
     local lv=""
+    # "-ybrt" suffix on KernelSU builds. Custom localversion to avoid matching
+    # Google's database of known custom kernels localversions. If it matches,
+    # Play Integrity breaks. Will be changed if necessary.
     [ "${variant}" = "KernelSU" ] && lv="-ybrt"
     [ "${IS_RELEASE}" = "0" ] && lv="${lv}-b${KERNEL_BUILD_NUM}"
     echo "${lv}"
@@ -480,20 +511,23 @@ compute_localversion() {
 #==============================================================================
 
 make_kernel() {
-    local make_args="-j${PROCS} O=${OUT_DIR} ARCH=${ARCH}"
+    local make_args="-j${PROCS}"
+    make_args="${make_args} O=${OUT_DIR}"
+    make_args="${make_args} ARCH=${ARCH}"
 
     case "${TOOLCHAIN}" in
         clang)
-            make_args="${make_args} LLVM=${CLANG_TOOLCHAIN_DIR}/bin/ LLVM_IAS=1"
+            make_args="${make_args} LLVM=${CLANG_TOOLCHAIN_DIR}/bin/"
+            make_args="${make_args} LLVM_IAS=1"
             ;;
         gcc)
             make_args="${make_args} CC=${CROSS_COMPILE}gcc"
             ;;
     esac
 
-    eval make ${make_args} \
-        LOCALVERSION=\"${LOCALVERSION}\" \
-        KBUILD_BUILD_VERSION=\"${KERNEL_BUILD_NUM}\" \
+    make ${make_args} \
+        "LOCALVERSION=${LOCALVERSION}" \
+        "KBUILD_BUILD_VERSION=${KERNEL_BUILD_NUM}" \
         "$@"
 }
 
@@ -501,21 +535,32 @@ configure_kernel() {
     local variant="$1"
     msg "Configuring ${variant} kernel..."
 
-    make_kernel "${DEFCONFIG}" > /dev/null || {
+    if ! make_kernel "${DEFCONFIG}" > /dev/null; then
         err "Failed to generate ${DEFCONFIG}"
-    }
+    fi
 
     if [ "${variant}" = "KernelSU" ]; then
         msg "Enabling KernelSU features..."
-        scripts/config --file "${OUT_DIR}/.config" \
-            -e KSU || {
+        if ! scripts/config --file "${OUT_DIR}/.config" -e KSU; then
             err "Failed to enable KernelSU features"
-        }
+        fi
     fi
 
-    make_kernel olddefconfig > /dev/null || {
+    # Enable clang hardening features for release clang builds
+    if [ "${TOOLCHAIN}" = "clang" ] && [ "${IS_RELEASE}" = "1" ]; then
+        msg "Enabling clang hardening features (CFI, SCS, LTO_FULL)..."
+        if ! scripts/config --file "${OUT_DIR}/.config" \
+            -e CONFIG_CFI_CLANG \
+            -e CONFIG_SHADOW_CALL_STACK \
+            -e CONFIG_LTO_CLANG_FULL \
+            -d CONFIG_LTO_CLANG_THIN; then
+            err "Failed to enable clang hardening features"
+        fi
+    fi
+
+    if ! make_kernel olddefconfig > /dev/null; then
         err "Failed to finalize configuration"
-    }
+    fi
 
     msg "Configuration complete"
 }
@@ -565,9 +610,9 @@ generate_dtbo() {
 
     if [ ! -f "${KERNEL_DIR}/mkdtimg" ]; then
         msg "Downloading mkdtimg..."
-        curl -fsSLo "${KERNEL_DIR}/mkdtimg" "${MKDTIMG_URL}" || {
+        if ! curl -fsSLo "${KERNEL_DIR}/mkdtimg" "${MKDTIMG_URL}"; then
             err "Failed to download mkdtimg"
-        }
+        fi
     fi
     chmod +x "${KERNEL_DIR}/mkdtimg"
 
@@ -580,9 +625,9 @@ generate_dtbo() {
 
     cd "${KERNEL_DIR}"
     # shellcheck disable=SC2086
-    ./mkdtimg create "${OUT_DIR}/dtbo.img" ${MKDTIMG_FLAGS} ${dtbo_files} || {
+    if ! ./mkdtimg create "${OUT_DIR}/dtbo.img" ${MKDTIMG_FLAGS} ${dtbo_files}; then
         err "Failed to generate dtbo.img"
-    }
+    fi
 
     msg "dtbo.img generated ($(echo ${dtbo_files} | wc -w) dtbo file(s))"
 }
@@ -614,31 +659,33 @@ generate_zip() {
 
     msg "Packaging ${variant} flashable zip: ${zip_final}"
 
-    cp "${IMAGE_PATH}" "${AK3_IMAGE}" || {
+    if ! cp "${IMAGE_PATH}" "${AK3_IMAGE}"; then
         err "Failed to copy ${KERNEL_IMAGE} to AnyKernel3"
-    }
+    fi
 
-    cat ${DTB_PATHS} > "${AK3_DTB}" || {
+    if ! cat ${DTB_PATHS} > "${AK3_DTB}"; then
         err "Failed to create DTB file"
-    }
+    fi
 
-    cp "${OUT_DIR}/dtbo.img" "${AK3_DTBO}" || {
+    if ! cp "${OUT_DIR}/dtbo.img" "${AK3_DTBO}"; then
         err "Failed to copy dtbo.img to AnyKernel3"
-    }
+    fi
 
-    cd "${AK3_DIR}" || err "Failed to enter AnyKernel3 directory"
+    if ! cd "${AK3_DIR}"; then
+        err "Failed to enter AnyKernel3 directory"
+    fi
 
     rm -f unsigned.zip
 
-    zip -r9 -q "unsigned.zip" . \
+    if ! zip -r9 -q "unsigned.zip" . \
         -x '*.git*/*' \
         -x '*.github*/*' \
         -x '*README.md*' \
         -x '*.zip*' \
-        -x 'zipsigner*' || {
+        -x 'zipsigner*'; then
         cd "${KERNEL_DIR}"
         err "Failed to create unsigned zip"
-    }
+    fi
 
     # Validate zip integrity
     msg "Validating zip integrity..."
@@ -651,11 +698,11 @@ generate_zip() {
     if [ "${SIGN}" = "1" ]; then
         if [ ! -f "${KERNEL_DIR}/zipsigner-3.0.jar" ]; then
             msg "Downloading zipsigner..."
-            curl -fsSLo "${KERNEL_DIR}/zipsigner-3.0.jar" \
-                "https://raw.githubusercontent.com/raphielscape/scripts/master/zipsigner-3.0.jar" || {
+            if ! curl -fsSLo "${KERNEL_DIR}/zipsigner-3.0.jar" \
+                "https://raw.githubusercontent.com/raphielscape/scripts/master/zipsigner-3.0.jar"; then
                 cd "${KERNEL_DIR}"
                 err "Failed to download zipsigner"
-            }
+            fi
         fi
 
         msg "Signing ${zip_final}..."
@@ -769,8 +816,8 @@ main() {
 
 # Build log handling: LOG=1 saves output to timestamped file
 if [ "${LOG}" = "1" ]; then
-    mkdir -p "${OUT_DIR:-/dev/null}"
-    LOG_FILE="${OUT_DIR:-.}/build-$(date +%Y%m%d-%H%M%S).log"
+    mkdir -p "${OUT_DIR}"
+    LOG_FILE="${OUT_DIR}/build-$(date +%Y%m%d-%H%M%S).log"
     main "$@" 2>&1 | tee -a "${LOG_FILE}"
 else
     main "$@"
