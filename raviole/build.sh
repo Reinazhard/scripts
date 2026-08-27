@@ -71,7 +71,16 @@ MKDTIMG_FLAGS="--page_size=4096 --id=/:board_id --rev=/:board_rev"
 # GCC toolchain source
 GCC_REPO="guacamole-sickness%2Fgs-infra%2Fgcc"
 
-# LLVM toolchain source
+# Clang toolchain source: "aosp" (Google prebuilt, default) or "llvm" (kernel.org slim)
+CLANG_SOURCE="${CLANG_SOURCE:-aosp}"
+
+# AOSP prebuilt clang (self-contained: clang + lld + llvm binutils under bin/).
+# Fully clang build via LLVM=1 LLVM_IAS=1 needs no separate arm32 compat toolchain.
+CLANG_PREBUILT_URL="${CLANG_PREBUILT_URL:-https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r614150.tar.gz}"
+# Directory name the AOSP prebuilt extracts into (override if URL changes).
+CLANG_PREBUILT_NAME="${CLANG_PREBUILT_NAME:-clang-r614150}"
+
+# LLVM toolchain source (used when CLANG_SOURCE=llvm)
 LLVM_BASE_URL="https://www.kernel.org/pub/tools/llvm/files"
 # Pin a specific LLVM version (override via env). Empty = use latest.
 LLVM_VERSION="${LLVM_VERSION:-}"
@@ -237,7 +246,40 @@ fetch_gcc_toolchain() {
 }
 
 #==============================================================================
-# LLVM/Clang toolchain download
+# AOSP prebuilt Clang download
+#==============================================================================
+
+fetch_aosp_clang() {
+    msg "Fetching AOSP prebuilt Clang (${CLANG_PREBUILT_NAME})..."
+
+    local clang_dir="${KERNEL_DIR}/${CLANG_PREBUILT_NAME}"
+    if [ -f "${clang_dir}/.done" ]; then
+        msg "AOSP Clang already cached: ${clang_dir}"
+        CLANG_TOOLCHAIN_DIR="${clang_dir}"
+        return 0
+    fi
+
+    msg "Downloading AOSP Clang..."
+    local tarball="/tmp/${CLANG_PREBUILT_NAME}.tar.gz"
+    if ! curl -fsSLo "${tarball}" "${CLANG_PREBUILT_URL}"; then
+        err "Failed to download AOSP Clang from ${CLANG_PREBUILT_URL}"
+    fi
+
+    msg "Extracting AOSP Clang..."
+    rm -rf "${clang_dir}"
+    mkdir -p "${clang_dir}"
+    if ! tar -xzf "${tarball}" -C "${clang_dir}"; then
+        err "Failed to extract AOSP Clang"
+    fi
+    rm -f "${tarball}"
+
+    touch "${clang_dir}/.done"
+    CLANG_TOOLCHAIN_DIR="${clang_dir}"
+    msg "AOSP Clang installed: ${clang_dir}"
+}
+
+#==============================================================================
+# LLVM/Clang toolchain download (kernel.org slim, used when CLANG_SOURCE=llvm)
 #==============================================================================
 
 fetch_clang_toolchain() {
@@ -313,7 +355,17 @@ setup_environment() {
             export CROSS_COMPILE_COMPAT="${GCC_TOOLCHAIN_DIR}/gcc-arm/bin/arm-linux-gnueabihf-"
             ;;
         clang)
-            fetch_clang_toolchain
+            case "${CLANG_SOURCE}" in
+                aosp)
+                    fetch_aosp_clang
+                    ;;
+                llvm)
+                    fetch_clang_toolchain
+                    ;;
+                *)
+                    err "Unknown CLANG_SOURCE: ${CLANG_SOURCE}. Use 'aosp' or 'llvm'."
+                    ;;
+            esac
             export PATH="${CLANG_TOOLCHAIN_DIR}/bin:${PATH}"
             ;;
         *)
@@ -517,7 +569,10 @@ make_kernel() {
 
     case "${TOOLCHAIN}" in
         clang)
-            make_args="${make_args} LLVM=${CLANG_TOOLCHAIN_DIR}/bin/"
+            # Fully clang build: LLVM=1 lets the kernel discover clang/lld from
+            # PATH (set in setup_environment); LLVM_IAS=1 uses clang's
+            # integrated assembler for both arm64 and arm32 — no GCC compat needed.
+            make_args="${make_args} LLVM=1"
             make_args="${make_args} LLVM_IAS=1"
             ;;
         gcc)
