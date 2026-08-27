@@ -622,12 +622,12 @@ configure_kernel() {
 
     # Enable clang hardening features for release clang builds
     if [ "${TOOLCHAIN}" = "clang" ] && [ "${IS_RELEASE}" = "1" ]; then
-        msg "Enabling clang hardening features (CFI, SCS, LTO_FULL)..."
+        msg "Enabling clang hardening features (CFI, SCS, LTO_THIN)..."
         if ! scripts/config --file "${OUT_DIR}/.config" \
             -e CONFIG_CFI_CLANG \
             -e CONFIG_SHADOW_CALL_STACK \
-            -e CONFIG_LTO_CLANG_FULL \
-            -d CONFIG_LTO_CLANG_THIN; then
+            -e CONFIG_LTO_CLANG_THIN \
+            -d CONFIG_LTO_CLANG_FULL; then
             err "Failed to enable clang hardening features"
         fi
     fi
