@@ -74,11 +74,13 @@ GCC_REPO="guacamole-sickness%2Fgs-infra%2Fgcc"
 # Clang toolchain source: "aosp" (Google prebuilt, default) or "llvm" (kernel.org slim)
 CLANG_SOURCE="${CLANG_SOURCE:-aosp}"
 
-# AOSP prebuilt clang (self-contained: clang + lld + llvm binutils under bin/).
-# Fully clang build via LLVM=1 LLVM_IAS=1 needs no separate arm32 compat toolchain.
-CLANG_PREBUILT_URL="${CLANG_PREBUILT_URL:-https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r614150.tar.gz}"
-# Directory name the AOSP prebuilt extracts into (override if URL changes).
-CLANG_PREBUILT_NAME="${CLANG_PREBUILT_NAME:-clang-r614150}"
+# AOSP prebuilt clang branch (self-contained: clang + lld + llvm binutils under bin/).
+# Latest version is auto-discovered (largest number, e.g. clang-r614150 > clang-r596125);
+# override with CLANG_PREBUILT_NAME to pin a specific one.
+CLANG_PREBUILT_BASE="${CLANG_PREBUILT_BASE:-https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86}"
+CLANG_PREBUILT_BRANCH="${CLANG_PREBUILT_BRANCH:-refs/heads/main-kernel}"
+# Empty = use latest discovered from the branch; set to e.g. "clang-r614150" to pin.
+CLANG_PREBUILT_NAME="${CLANG_PREBUILT_NAME:-}"
 
 # LLVM toolchain source (used when CLANG_SOURCE=llvm)
 LLVM_BASE_URL="https://www.kernel.org/pub/tools/llvm/files"
@@ -250,19 +252,37 @@ fetch_gcc_toolchain() {
 #==============================================================================
 
 fetch_aosp_clang() {
-    msg "Fetching AOSP prebuilt Clang (${CLANG_PREBUILT_NAME})..."
+    # Resolve which prebuilt to use: pinned name or latest from the branch.
+    local clang_name="${CLANG_PREBUILT_NAME}"
 
-    local clang_dir="${KERNEL_DIR}/${CLANG_PREBUILT_NAME}"
+    if [ -z "${clang_name}" ]; then
+        msg "Discovering latest AOSP Clang prebuilt..."
+        clang_name=$(curl -fsSL "${CLANG_PREBUILT_BASE}/+/${CLANG_PREBUILT_BRANCH}" \
+            | grep -oE 'clang-[r0-9]+[0-9]' \
+            | sed 's/^clang-//' \
+            | sort -t r -k2 -V \
+            | tail -n1)
+        if [ -z "${clang_name}" ]; then
+            err "Failed to discover latest AOSP Clang prebuilt from ${CLANG_PREBUILT_BASE}"
+        fi
+        clang_name="clang-${clang_name}"
+        msg "Latest AOSP Clang: ${clang_name}"
+    fi
+
+    msg "Fetching AOSP prebuilt Clang (${clang_name})..."
+
+    local clang_dir="${KERNEL_DIR}/${clang_name}"
     if [ -f "${clang_dir}/.done" ]; then
         msg "AOSP Clang already cached: ${clang_dir}"
         CLANG_TOOLCHAIN_DIR="${clang_dir}"
         return 0
     fi
 
+    local url="${CLANG_PREBUILT_BASE}/+archive/${CLANG_PREBUILT_BRANCH}/${clang_name}.tar.gz"
     msg "Downloading AOSP Clang..."
-    local tarball="/tmp/${CLANG_PREBUILT_NAME}.tar.gz"
-    if ! curl -fsSLo "${tarball}" "${CLANG_PREBUILT_URL}"; then
-        err "Failed to download AOSP Clang from ${CLANG_PREBUILT_URL}"
+    local tarball="/tmp/${clang_name}.tar.gz"
+    if ! curl -fsSLo "${tarball}" "${url}"; then
+        err "Failed to download AOSP Clang from ${url}"
     fi
 
     msg "Extracting AOSP Clang..."
@@ -366,7 +386,6 @@ setup_environment() {
                     err "Unknown CLANG_SOURCE: ${CLANG_SOURCE}. Use 'aosp' or 'llvm'."
                     ;;
             esac
-            export PATH="${CLANG_TOOLCHAIN_DIR}/bin:${PATH}"
             ;;
         *)
             err "Unknown toolchain: ${TOOLCHAIN}. Use 'gcc' or 'clang'."
@@ -569,10 +588,10 @@ make_kernel() {
 
     case "${TOOLCHAIN}" in
         clang)
-            # Fully clang build: LLVM=1 lets the kernel discover clang/lld from
-            # PATH (set in setup_environment); LLVM_IAS=1 uses clang's
+            # Point the kernel build at the prebuilt's bin/ directly. Equivalent
+            # to LLVM=1 but avoids needing to export PATH; LLVM_IAS=1 uses clang's
             # integrated assembler for both arm64 and arm32 — no GCC compat needed.
-            make_args="${make_args} LLVM=1"
+            make_args="${make_args} LLVM=${CLANG_TOOLCHAIN_DIR}/bin/"
             make_args="${make_args} LLVM_IAS=1"
             ;;
         gcc)
