@@ -415,7 +415,7 @@ setup_environment() {
 
     # Compiler info
     if [ "${TOOLCHAIN}" = "clang" ]; then
-        KBUILD_COMPILER_STRING=$(clang --version | head -n 1 \
+        KBUILD_COMPILER_STRING=$("${CLANG_TOOLCHAIN_DIR}/bin/clang" --version | head -n 1 \
             | sed -e 's/(http[^)]*)//g' -e 's/  */ /g' -e 's/[[:space:]]*$//')
     else
         KBUILD_COMPILER_STRING=$("${CROSS_COMPILE}gcc" --version | head -n 1)
