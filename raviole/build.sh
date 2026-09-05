@@ -4,22 +4,71 @@
 # Kernel build script for Google Tensor GS101 (Raviole: Pixel 6/6 Pro/6a)
 # Supports Standard and KernelSU build variants
 
+#==============================================================================
+# User configuration — edit these directly (replaces build.env)
+# External environment still overrides any value below.
+#==============================================================================
+
+# Device config
+ZIPNAME="${ZIPNAME:-86hm}"
+DEVICE="${DEVICE:-gs101}"
+DEFCONFIG="${DEFCONFIG:-raviole_defconfig}"
+KERNEL_IMAGE="${KERNEL_IMAGE:-Image.lz4}"
+DTB_FILES="${DTB_FILES:-gs101-a0.dtb gs101-b0.dtb}"
+
+# Toolchain: gcc or clang
+TOOLCHAIN="${TOOLCHAIN:-clang}"
+
+# Clang source: "aosp" (Google prebuilt, default) or "llvm" (kernel.org slim)
+CLANG_SOURCE="${CLANG_SOURCE:-aosp}"
+
+# AOSP prebuilt clang (used when CLANG_SOURCE=aosp).
+# Latest version is auto-discovered from the branch (largest number wins);
+# set CLANG_PREBUILT_NAME to pin, e.g. "clang-r614150".
+CLANG_PREBUILT_BASE="${CLANG_PREBUILT_BASE:-https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86}"
+CLANG_PREBUILT_BRANCH="${CLANG_PREBUILT_BRANCH:-refs/heads/main-kernel}"
+CLANG_PREBUILT_NAME="${CLANG_PREBUILT_NAME:-}"
+
+# Pin a specific LLVM version (used only when CLANG_SOURCE=llvm).
+# Empty = use latest from kernel.org.
+LLVM_VERSION="${LLVM_VERSION:-}"
+
+# AnyKernel3
+AK3_REPO="${AK3_REPO:-Reinazhard/AnyKernel3}"
+
+# KernelSU (used when KSU=1)
+KSU_REPO="${KSU_REPO:-Reinazhard/KernelSU}"
+KSU_BRANCH="${KSU_BRANCH:-fork}"
+
+# Build behavior (0 or 1)
+CLEAN="${CLEAN:-0}"
+SIGN="${SIGN:-0}"
+NOTIFY="${NOTIFY:-0}"
+LOG="${LOG:-0}"
+RELEASE="${RELEASE:-0}"
+KSU="${KSU:-0}"
+CI="${CI:-0}"
+
+# Single Telegram chat for all builds (TELEGRAM_TOKEN comes from env/secrets)
+CHATID="${CHATID:--1001403511595}"
+
+# Output directory (empty = ${PWD}/out)
+OUT_DIR="${OUT_DIR:-}"
+
+# Spoofed kernel build date (RELEASE/CI builds only)
+KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-Wed Jan 28 05:34:14 UTC 2026}"
+
+# Spoofed build user and hostname
+KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-build-user}"
+KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-build-host}"
+
+# Clang hardening features (auto-enabled when TOOLCHAIN=clang && RELEASE=1):
+#   CONFIG_CFI_CLANG, CONFIG_SHADOW_CALL_STACK, CONFIG_LTO_CLANG_THIN
+#   (CONFIG_LTO_CLANG_FULL is disabled to make LTO_THIN stick)
+# No manual override needed — controlled by TOOLCHAIN and RELEASE flags.
+
 set -eu
 set -o pipefail
-
-#==============================================================================
-# Environment configuration file
-#==============================================================================
-
-ENV_FILE="${PWD}/build.env"
-
-if [ -f "${ENV_FILE}" ]; then
-    printf '\033[1;32m[*]\033[0m Loading build.env configuration\n'
-    set -a
-    # shellcheck source=/dev/null
-    . "${ENV_FILE}"
-    set +a
-fi
 
 #==============================================================================
 # Logging and utilities
@@ -41,27 +90,8 @@ format_duration() {
 readonly KERNEL_DIR="${PWD}"
 readonly KERNEL_BUILD_NUM_FILE="${KERNEL_DIR}/.build_number"
 
-# Device configuration (override via env)
-ZIPNAME="${ZIPNAME:-86hm}"
-DEVICE="${DEVICE:-gs101}"
-DEFCONFIG="${DEFCONFIG:-raviole_defconfig}"
-
-# Kernel image filename (override via env)
-KERNEL_IMAGE="${KERNEL_IMAGE:-Image.lz4}"
-
-# Device tree files (override via env)
-DTB_FILES="${DTB_FILES:-gs101-a0.dtb gs101-b0.dtb}"
-
-# Toolchain selection: gcc or clang (override via env)
-TOOLCHAIN="${TOOLCHAIN:-clang}"
-
-# AnyKernel3 configuration (override via env)
-AK3_REPO="${AK3_REPO:-Reinazhard/AnyKernel3}"
+# Working dirs (repos configurable above)
 AK3_DIR="${KERNEL_DIR}/AnyKernel3"
-
-# KernelSU configuration (override via env)
-KSU_REPO="${KSU_REPO:-Reinazhard/KernelSU}"
-KSU_BRANCH="${KSU_BRANCH:-fork}"
 KSU_DIR="${KERNEL_DIR}/KernelSU"
 
 # mkdtimg configuration
@@ -71,35 +101,10 @@ MKDTIMG_FLAGS="--page_size=4096 --id=/:board_id --rev=/:board_rev"
 # GCC toolchain source
 GCC_REPO="guacamole-sickness%2Fgs-infra%2Fgcc"
 
-# Clang toolchain source: "aosp" (Google prebuilt, default) or "llvm" (kernel.org slim)
-CLANG_SOURCE="${CLANG_SOURCE:-aosp}"
-
-# AOSP prebuilt clang branch (self-contained: clang + lld + llvm binutils under bin/).
-# Latest version is auto-discovered (largest number, e.g. clang-r614150 > clang-r596125);
-# override with CLANG_PREBUILT_NAME to pin a specific one.
-CLANG_PREBUILT_BASE="${CLANG_PREBUILT_BASE:-https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86}"
-CLANG_PREBUILT_BRANCH="${CLANG_PREBUILT_BRANCH:-refs/heads/main-kernel}"
-# Empty = use latest discovered from the branch; set to e.g. "clang-r614150" to pin.
-CLANG_PREBUILT_NAME="${CLANG_PREBUILT_NAME:-}"
-
 # LLVM toolchain source (used when CLANG_SOURCE=llvm)
 LLVM_BASE_URL="https://www.kernel.org/pub/tools/llvm/files"
-# Pin a specific LLVM version (override via env). Empty = use latest.
-LLVM_VERSION="${LLVM_VERSION:-}"
-
-# Spoofed kernel build date for release/CI builds (override via env)
-KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-Wed Jan 28 05:34:14 UTC 2026}"
-
-# Build behavior (override via env)
-CLEAN="${CLEAN:-0}"
-SIGN="${SIGN:-0}"
-NOTIFY="${NOTIFY:-0}"
-LOG="${LOG:-0}"
-RELEASE="${RELEASE:-0}"
-KSU="${KSU:-0}"
 
 # Normalize CI env (GitHub Actions sets CI=true, we use 0/1)
-CI="${CI:-0}"
 [ "${CI}" = "true" ] && CI=1
 [ "${CI}" != "0" ] && [ "${CI}" != "1" ] && err "CI must be 0 or 1, got: ${CI}"
 
@@ -119,9 +124,6 @@ fi
 [ "${LOG}" != "0" ] && [ "${LOG}" != "1" ] && err "LOG must be 0 or 1, got: ${LOG}"
 [ "${RELEASE}" != "0" ] && [ "${RELEASE}" != "1" ] && err "RELEASE must be 0 or 1, got: ${RELEASE}"
 [ "${KSU}" != "0" ] && [ "${KSU}" != "1" ] && err "KSU must be 0 or 1, got: ${KSU}"
-
-# Single Telegram chat for all builds
-CHATID="${CHATID:--1001403511595}"
 
 readonly CHATID IS_RELEASE
 
@@ -425,8 +427,7 @@ setup_environment() {
     # Spoof build date for release builds
     [ "${IS_RELEASE}" = "1" ] && export KBUILD_BUILD_TIMESTAMP
 
-    export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-build-user}"
-    export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-build-host}"
+    export KBUILD_BUILD_USER KBUILD_BUILD_HOST
 
     # Parallel jobs
     PROCS=$(nproc --all)
