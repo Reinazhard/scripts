@@ -37,6 +37,9 @@ LLVM_VERSION="${LLVM_VERSION:-}"
 CLANG_TOOLCHAIN_DIR="${CLANG_TOOLCHAIN_DIR:-}"
 GCC_TOOLCHAIN_DIR="${GCC_TOOLCHAIN_DIR:-}"
 
+# Persistent toolchain cache directory (shared across kernel checkouts)
+TOOLCHAIN_CACHE_DIR="${TOOLCHAIN_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/android-kernel-tools}"
+
 # AnyKernel3 (leave AK3_DIR empty for auto-detection / ${KERNEL_DIR}/AnyKernel3)
 AK3_DIR="${AK3_DIR:-}"
 AK3_REPO="${AK3_REPO:-Reinazhard/AnyKernel3}"
@@ -236,66 +239,129 @@ find_zipsigner() {
     return 1
 }
 
+verify_archive_hash() {
+    local file="$1"
+    local expected_hash="${2:-}"
+
+    [ -z "${expected_hash}" ] && return 0
+
+    if command -v sha256sum > /dev/null 2>&1; then
+        local actual_hash
+        actual_hash=$(sha256sum "${file}" | awk '{print $1}')
+        if [ "${actual_hash}" != "${expected_hash}" ]; then
+            rm -f "${file}"
+            err "Checksum verification failed for ${file} (expected: ${expected_hash}, got: ${actual_hash})"
+        fi
+        msg "Archive checksum verified: ${file}"
+    fi
+}
+
 find_cached_aosp_clang() {
     if [ -n "${CLANG_PREBUILT_NAME:-}" ]; then
-        local pinned_dir="${KERNEL_DIR}/${CLANG_PREBUILT_NAME}"
-        if [ -f "${pinned_dir}/.done" ] || [ -x "${pinned_dir}/bin/clang" ]; then
-            echo "${pinned_dir}"
-            return 0
-        fi
+        for base in "${KERNEL_DIR}" "${TOOLCHAIN_CACHE_DIR}"; do
+            local pinned_dir="${base}/${CLANG_PREBUILT_NAME}"
+            if [ -f "${pinned_dir}/.done" ] || [ -x "${pinned_dir}/bin/clang" ]; then
+                echo "${pinned_dir}"
+                return 0
+            fi
+        done
     fi
 
-    local latest
-    latest=$(find "${KERNEL_DIR}" -maxdepth 1 -type d -name 'clang-r*' 2>/dev/null \
-        | sed -n 's|.*/\(clang-[r0-9]\+\)|\1|p' \
-        | sort -t r -k2 -V \
-        | tail -n1)
-    if [ -n "${latest}" ]; then
-        local cdir="${KERNEL_DIR}/${latest}"
-        if [ -f "${cdir}/.done" ] || [ -x "${cdir}/bin/clang" ]; then
-            echo "${cdir}"
-            return 0
+    local search_dirs="${KERNEL_DIR}"
+    [ -d "${TOOLCHAIN_CACHE_DIR}" ] && search_dirs="${search_dirs} ${TOOLCHAIN_CACHE_DIR}"
+
+    local latest=""
+    local best_dir=""
+    for sdir in ${search_dirs}; do
+        local cand
+        cand=$(find "${sdir}" -maxdepth 1 -type d -name 'clang-r*' 2>/dev/null \
+            | sed -n 's|.*/\(clang-[r0-9]\+\)|\1|p' \
+            | sort -t r -k2 -V \
+            | tail -n1)
+        if [ -n "${cand}" ]; then
+            local cdir="${sdir}/${cand}"
+            if [ -f "${cdir}/.done" ] || [ -x "${cdir}/bin/clang" ]; then
+                if [ -z "${latest}" ] || [ "$(printf '%s\n%s' "${latest}" "${cand}" | sed 's/^clang-//' | sort -t r -k2 -V | tail -n1)" = "${cand#clang-}" ]; then
+                    latest="${cand}"
+                    best_dir="${cdir}"
+                fi
+            fi
         fi
+    done
+
+    if [ -n "${best_dir}" ]; then
+        echo "${best_dir}"
+        return 0
     fi
     return 1
 }
 
 find_cached_llvm() {
     if [ -n "${LLVM_VERSION:-}" ]; then
-        local pinned_dir="${KERNEL_DIR}/llvm-${LLVM_VERSION}"
-        if [ -f "${pinned_dir}/.done" ] || [ -x "${pinned_dir}/bin/clang" ]; then
-            echo "${pinned_dir}"
-            return 0
-        fi
+        for base in "${KERNEL_DIR}" "${TOOLCHAIN_CACHE_DIR}"; do
+            local pinned_dir="${base}/llvm-${LLVM_VERSION}"
+            if [ -f "${pinned_dir}/.done" ] || [ -x "${pinned_dir}/bin/clang" ]; then
+                echo "${pinned_dir}"
+                return 0
+            fi
+        done
     fi
 
-    local latest
-    latest=$(find "${KERNEL_DIR}" -maxdepth 1 -type d -name 'llvm-*' 2>/dev/null \
-        | sed -n 's|.*/llvm-\([0-9.]\+\)|\1|p' \
-        | sort -t. -k1,1V -k2,2n -k3,3n \
-        | tail -n1)
-    if [ -n "${latest}" ]; then
-        local cdir="${KERNEL_DIR}/llvm-${latest}"
-        if [ -f "${cdir}/.done" ] || [ -x "${cdir}/bin/clang" ]; then
-            echo "${cdir}"
-            return 0
+    local search_dirs="${KERNEL_DIR}"
+    [ -d "${TOOLCHAIN_CACHE_DIR}" ] && search_dirs="${search_dirs} ${TOOLCHAIN_CACHE_DIR}"
+
+    local latest=""
+    local best_dir=""
+    for sdir in ${search_dirs}; do
+        local cand
+        cand=$(find "${sdir}" -maxdepth 1 -type d -name 'llvm-*' 2>/dev/null \
+            | sed -n 's|.*/llvm-\([0-9.]\+\)|\1|p' \
+            | sort -t. -k1,1V -k2,2n -k3,3n \
+            | tail -n1)
+        if [ -n "${cand}" ]; then
+            local cdir="${sdir}/llvm-${cand}"
+            if [ -f "${cdir}/.done" ] || [ -x "${cdir}/bin/clang" ]; then
+                if [ -z "${latest}" ] || [ "$(printf '%s\n%s' "${latest}" "${cand}" | sort -t. -k1,1V -k2,2n -k3,3n | tail -n1)" = "${cand}" ]; then
+                    latest="${cand}"
+                    best_dir="${cdir}"
+                fi
+            fi
         fi
+    done
+
+    if [ -n "${best_dir}" ]; then
+        echo "${best_dir}"
+        return 0
     fi
     return 1
 }
 
 find_cached_gcc() {
-    local latest
-    latest=$(find "${KERNEL_DIR}" -maxdepth 1 -type d -name 'gcc-*' 2>/dev/null \
-        | sed -n 's|.*/gcc-\(.*\)|\1|p' \
-        | sort -V \
-        | tail -n1)
-    if [ -n "${latest}" ]; then
-        local gdir="${KERNEL_DIR}/gcc-${latest}"
-        if [ -f "${gdir}/.done" ] || [ -x "${gdir}/gcc-arm64/bin/aarch64-linux-gnu-gcc" ] || [ -x "${gdir}/bin/aarch64-linux-gnu-gcc" ]; then
-            echo "${gdir}"
-            return 0
+    local search_dirs="${KERNEL_DIR}"
+    [ -d "${TOOLCHAIN_CACHE_DIR}" ] && search_dirs="${search_dirs} ${TOOLCHAIN_CACHE_DIR}"
+
+    local latest=""
+    local best_dir=""
+    for sdir in ${search_dirs}; do
+        local cand
+        cand=$(find "${sdir}" -maxdepth 1 -type d -name 'gcc-*' 2>/dev/null \
+            | sed -n 's|.*/gcc-\(.*\)|\1|p' \
+            | sort -V \
+            | tail -n1)
+        if [ -n "${cand}" ]; then
+            local gdir="${sdir}/gcc-${cand}"
+            if [ -f "${gdir}/.done" ] || [ -x "${gdir}/gcc-arm64/bin/aarch64-linux-gnu-gcc" ] || [ -x "${gdir}/bin/aarch64-linux-gnu-gcc" ]; then
+                if [ -z "${latest}" ] || [ "$(printf '%s\n%s' "${latest}" "${cand}" | sort -V | tail -n1)" = "${cand}" ]; then
+                    latest="${cand}"
+                    best_dir="${gdir}"
+                fi
+            fi
         fi
+    done
+
+    if [ -n "${best_dir}" ]; then
+        echo "${best_dir}"
+        return 0
     fi
     return 1
 }
@@ -406,7 +472,8 @@ fetch_gcc_toolchain() {
 
     msg "Latest GCC toolchain: ${tag}"
 
-    local gcc_dir="${KERNEL_DIR}/gcc-${tag}"
+    mkdir -p "${TOOLCHAIN_CACHE_DIR}"
+    local gcc_dir="${TOOLCHAIN_CACHE_DIR}/gcc-${tag}"
     if [ -f "${gcc_dir}/.done" ] || [ -x "${gcc_dir}/gcc-arm64/bin/aarch64-linux-gnu-gcc" ]; then
         msg "GCC toolchain already cached: ${gcc_dir}"
         GCC_TOOLCHAIN_DIR="${gcc_dir}"
@@ -520,7 +587,8 @@ fetch_aosp_clang() {
 
     msg "Fetching AOSP prebuilt Clang (${clang_name})..."
 
-    local clang_dir="${KERNEL_DIR}/${clang_name}"
+    mkdir -p "${TOOLCHAIN_CACHE_DIR}"
+    local clang_dir="${TOOLCHAIN_CACHE_DIR}/${clang_name}"
     if [ -f "${clang_dir}/.done" ] || [ -x "${clang_dir}/bin/clang" ]; then
         msg "AOSP Clang already cached: ${clang_dir}"
         CLANG_TOOLCHAIN_DIR="${clang_dir}"
@@ -607,7 +675,8 @@ fetch_clang_toolchain() {
         err "Failed to determine LLVM version (offline?) and no local Clang found. Set LLVM_VERSION or CLANG_TOOLCHAIN_DIR."
     fi
 
-    local clang_dir="${KERNEL_DIR}/llvm-${version}"
+    mkdir -p "${TOOLCHAIN_CACHE_DIR}"
+    local clang_dir="${TOOLCHAIN_CACHE_DIR}/llvm-${version}"
     if [ -f "${clang_dir}/.done" ] || [ -x "${clang_dir}/bin/clang" ]; then
         msg "LLVM toolchain already cached: ${clang_dir}"
         CLANG_TOOLCHAIN_DIR="${clang_dir}"
@@ -1196,10 +1265,118 @@ build_variant() {
 }
 
 #==============================================================================
+# Toolchain management CLI operations
+#==============================================================================
+
+list_toolchains() {
+    msg "Cached Toolchains:"
+    local found=0
+    for sdir in "${TOOLCHAIN_CACHE_DIR}" "${KERNEL_DIR}"; do
+        [ ! -d "${sdir}" ] && continue
+        for tc in "${sdir}"/clang-r* "${sdir}"/llvm-* "${sdir}"/gcc-*; do
+            [ ! -d "${tc}" ] && continue
+            local sz
+            sz=$(du -sh "${tc}" 2>/dev/null | cut -f1)
+            local tag="shared-cache"
+            [ "${sdir}" = "${KERNEL_DIR}" ] && tag="local"
+            printf "  - %-22s [%-12s] (%s) -> %s\n" "$(basename "${tc}")" "${tag}" "${sz}" "${tc}"
+            found=1
+        done
+    done
+    if [ ${found} -eq 0 ]; then
+        msg "  No cached toolchains found in:"
+        msg "    - Cache:  ${TOOLCHAIN_CACHE_DIR}"
+        msg "    - Kernel: ${KERNEL_DIR}"
+    fi
+    exit 0
+}
+
+clean_cache() {
+    if [ -d "${TOOLCHAIN_CACHE_DIR}" ]; then
+        msg "Cleaning toolchain cache: ${TOOLCHAIN_CACHE_DIR}..."
+        rm -rf "${TOOLCHAIN_CACHE_DIR}"
+        msg "Toolchain cache cleaned."
+    else
+        msg "Toolchain cache directory does not exist: ${TOOLCHAIN_CACHE_DIR}"
+    fi
+    exit 0
+}
+
+prefetch_toolchain() {
+    msg "Prefetching toolchain (TOOLCHAIN=${TOOLCHAIN}, CLANG_SOURCE=${CLANG_SOURCE})..."
+    check_dependencies
+    case "${TOOLCHAIN}" in
+        gcc)
+            fetch_gcc_toolchain
+            msg "GCC toolchain ready: ${GCC_TOOLCHAIN_DIR}"
+            ;;
+        clang)
+            case "${CLANG_SOURCE}" in
+                aosp)
+                    fetch_aosp_clang
+                    msg "AOSP Clang ready: ${CLANG_TOOLCHAIN_DIR}"
+                    ;;
+                llvm)
+                    fetch_clang_toolchain
+                    msg "LLVM Clang ready: ${CLANG_TOOLCHAIN_DIR}"
+                    ;;
+            esac
+            ;;
+    esac
+    msg "Prefetch complete."
+    exit 0
+}
+
+handle_args() {
+    for arg in "$@"; do
+        case "${arg}" in
+            --list-toolchains)
+                list_toolchains
+                ;;
+            --clean-cache)
+                clean_cache
+                ;;
+            --prefetch)
+                prefetch_toolchain
+                ;;
+            --help|-h)
+                cat << EOF
+Raviole Kernel Build System
+
+Usage: $0 [OPTIONS]
+
+Options:
+  --prefetch          Download and cache active toolchain without starting build
+  --list-toolchains   List all cached toolchains and sizes
+  --clean-cache       Remove all cached toolchains in TOOLCHAIN_CACHE_DIR
+  -h, --help          Show this help message
+
+Environment variables:
+  TOOLCHAIN           Compiler toolchain: clang (default) or gcc
+  CLANG_SOURCE        Clang source: aosp (default) or llvm
+  TOOLCHAIN_CACHE_DIR Cache directory (default: ~/.cache/android-kernel-tools)
+  CLANG_TOOLCHAIN_DIR Explicit path to Clang toolchain
+  GCC_TOOLCHAIN_DIR   Explicit path to GCC toolchain
+  CROSS_COMPILE       Prefix for GCC (e.g. aarch64-linux-gnu-)
+  KSU                 Build KernelSU variant (0 or 1)
+  CLEAN               Clean before build (0 or 1)
+  SIGN                Sign flashable zip (0 or 1)
+  NOTIFY              Send Telegram notifications (0 or 1)
+  RELEASE             Release build mode (0 or 1)
+  OUT_DIR             Build output directory (default: out)
+EOF
+                exit 0
+                ;;
+        esac
+    done
+}
+
+#==============================================================================
 # Main entry point
 #==============================================================================
 
 main() {
+    handle_args "$@"
     trap on_exit EXIT
 
     msg "========================================"
