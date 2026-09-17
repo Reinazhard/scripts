@@ -33,12 +33,22 @@ CLANG_PREBUILT_NAME="${CLANG_PREBUILT_NAME:-}"
 # Empty = use latest from kernel.org.
 LLVM_VERSION="${LLVM_VERSION:-}"
 
-# AnyKernel3
+# Custom toolchain paths (optional — overrides auto-discovery/download)
+CLANG_TOOLCHAIN_DIR="${CLANG_TOOLCHAIN_DIR:-}"
+GCC_TOOLCHAIN_DIR="${GCC_TOOLCHAIN_DIR:-}"
+
+# AnyKernel3 (leave AK3_DIR empty for auto-detection / ${KERNEL_DIR}/AnyKernel3)
+AK3_DIR="${AK3_DIR:-}"
 AK3_REPO="${AK3_REPO:-Reinazhard/AnyKernel3}"
 
-# KernelSU (used when KSU=1)
+# KernelSU (used when KSU=1, leave KSU_DIR empty for ${KERNEL_DIR}/KernelSU)
+KSU_DIR="${KSU_DIR:-}"
 KSU_REPO="${KSU_REPO:-Reinazhard/KernelSU}"
 KSU_BRANCH="${KSU_BRANCH:-fork}"
+
+# Utility overrides (optional — auto-detected locally before download)
+MKDTIMG="${MKDTIMG:-}"
+ZIPSIGNER_JAR="${ZIPSIGNER_JAR:-}"
 
 # Build behavior (0 or 1)
 CLEAN="${CLEAN:-0}"
@@ -89,10 +99,12 @@ format_duration() {
 
 readonly KERNEL_DIR="${PWD}"
 readonly KERNEL_BUILD_NUM_FILE="${KERNEL_DIR}/.build_number"
+readonly SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "${KERNEL_DIR}")"
 
 # Working dirs (repos configurable above)
-AK3_DIR="${KERNEL_DIR}/AnyKernel3"
-KSU_DIR="${KERNEL_DIR}/KernelSU"
+AK3_DIR="${AK3_DIR:-${KERNEL_DIR}/AnyKernel3}"
+[ ! -d "${AK3_DIR}" ] && [ -d "${SCRIPT_DIR}/../AnyKernel3" ] && AK3_DIR="${SCRIPT_DIR}/../AnyKernel3"
+KSU_DIR="${KSU_DIR:-${KERNEL_DIR}/KernelSU}"
 
 # mkdtimg configuration
 MKDTIMG_URL="https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/utility/mkdtimg"
@@ -155,22 +167,190 @@ AK3_DTBO="${AK3_DIR}/dtbo.img"
 BUILD_DURATION=0
 
 #==============================================================================
+# Local resource discovery (offline support)
+#==============================================================================
+
+find_mkdtimg() {
+    # 1. Custom override
+    if [ -n "${MKDTIMG:-}" ] && [ -x "${MKDTIMG}" ]; then
+        echo "${MKDTIMG}"
+        return 0
+    fi
+    # 2. Local in KERNEL_DIR
+    if [ -x "${KERNEL_DIR}/mkdtimg" ]; then
+        echo "${KERNEL_DIR}/mkdtimg"
+        return 0
+    fi
+    # 3. Kernel tree built-in or scripts/dtc
+    if [ -x "${KERNEL_DIR}/scripts/dtc/mkdtimg" ]; then
+        echo "${KERNEL_DIR}/scripts/dtc/mkdtimg"
+        return 0
+    fi
+    # 4. Relative to build.sh script directory
+    if [ -x "${SCRIPT_DIR}/../utility/mkdtimg" ]; then
+        echo "${SCRIPT_DIR}/../utility/mkdtimg"
+        return 0
+    fi
+    if [ -x "${SCRIPT_DIR}/utility/mkdtimg" ]; then
+        echo "${SCRIPT_DIR}/utility/mkdtimg"
+        return 0
+    fi
+    # 5. In KERNEL_DIR utility directories
+    if [ -x "${KERNEL_DIR}/utility/mkdtimg" ]; then
+        echo "${KERNEL_DIR}/utility/mkdtimg"
+        return 0
+    fi
+    if [ -x "${KERNEL_DIR}/scripts/utility/mkdtimg" ]; then
+        echo "${KERNEL_DIR}/scripts/utility/mkdtimg"
+        return 0
+    fi
+    # 6. In PATH
+    if command -v mkdtimg > /dev/null 2>&1; then
+        command -v mkdtimg
+        return 0
+    fi
+    return 1
+}
+
+find_zipsigner() {
+    if [ -n "${ZIPSIGNER_JAR:-}" ] && [ -f "${ZIPSIGNER_JAR}" ]; then
+        echo "${ZIPSIGNER_JAR}"
+        return 0
+    fi
+    if [ -f "${KERNEL_DIR}/zipsigner-3.0.jar" ]; then
+        echo "${KERNEL_DIR}/zipsigner-3.0.jar"
+        return 0
+    fi
+    if [ -f "${KERNEL_DIR}/zipsigner.jar" ]; then
+        echo "${KERNEL_DIR}/zipsigner.jar"
+        return 0
+    fi
+    if [ -f "${SCRIPT_DIR}/../utility/zipsigner-3.0.jar" ]; then
+        echo "${SCRIPT_DIR}/../utility/zipsigner-3.0.jar"
+        return 0
+    fi
+    if [ -f "${SCRIPT_DIR}/../utility/zipsigner.jar" ]; then
+        echo "${SCRIPT_DIR}/../utility/zipsigner.jar"
+        return 0
+    fi
+    return 1
+}
+
+find_cached_aosp_clang() {
+    if [ -n "${CLANG_PREBUILT_NAME:-}" ]; then
+        local pinned_dir="${KERNEL_DIR}/${CLANG_PREBUILT_NAME}"
+        if [ -f "${pinned_dir}/.done" ] || [ -x "${pinned_dir}/bin/clang" ]; then
+            echo "${pinned_dir}"
+            return 0
+        fi
+    fi
+
+    local latest
+    latest=$(find "${KERNEL_DIR}" -maxdepth 1 -type d -name 'clang-r*' 2>/dev/null \
+        | sed -n 's|.*/\(clang-[r0-9]\+\)|\1|p' \
+        | sort -t r -k2 -V \
+        | tail -n1)
+    if [ -n "${latest}" ]; then
+        local cdir="${KERNEL_DIR}/${latest}"
+        if [ -f "${cdir}/.done" ] || [ -x "${cdir}/bin/clang" ]; then
+            echo "${cdir}"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+find_cached_llvm() {
+    if [ -n "${LLVM_VERSION:-}" ]; then
+        local pinned_dir="${KERNEL_DIR}/llvm-${LLVM_VERSION}"
+        if [ -f "${pinned_dir}/.done" ] || [ -x "${pinned_dir}/bin/clang" ]; then
+            echo "${pinned_dir}"
+            return 0
+        fi
+    fi
+
+    local latest
+    latest=$(find "${KERNEL_DIR}" -maxdepth 1 -type d -name 'llvm-*' 2>/dev/null \
+        | sed -n 's|.*/llvm-\([0-9.]\+\)|\1|p' \
+        | sort -t. -k1,1V -k2,2n -k3,3n \
+        | tail -n1)
+    if [ -n "${latest}" ]; then
+        local cdir="${KERNEL_DIR}/llvm-${latest}"
+        if [ -f "${cdir}/.done" ] || [ -x "${cdir}/bin/clang" ]; then
+            echo "${cdir}"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+find_cached_gcc() {
+    local latest
+    latest=$(find "${KERNEL_DIR}" -maxdepth 1 -type d -name 'gcc-*' 2>/dev/null \
+        | sed -n 's|.*/gcc-\(.*\)|\1|p' \
+        | sort -V \
+        | tail -n1)
+    if [ -n "${latest}" ]; then
+        local gdir="${KERNEL_DIR}/gcc-${latest}"
+        if [ -f "${gdir}/.done" ] || [ -x "${gdir}/gcc-arm64/bin/aarch64-linux-gnu-gcc" ] || [ -x "${gdir}/bin/aarch64-linux-gnu-gcc" ]; then
+            echo "${gdir}"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+#==============================================================================
 # Dependency checking
 #==============================================================================
 
 check_dependencies() {
     local missing=""
-    local deps="git make curl unzip zip"
+    local deps="git make unzip zip"
 
-    if [ "${TOOLCHAIN}" = "gcc" ]; then
-        deps="${deps} xz zstd"
-    else
-        deps="${deps} xz"
+    [ "${SIGN}" = "1" ] && deps="${deps} java"
+
+    # Only require curl if an artifact or toolchain must be downloaded online
+    local need_curl=0
+    [ "${NOTIFY}" = "1" ] && need_curl=1
+
+    case "${TOOLCHAIN}" in
+        clang)
+            if [ -z "${CLANG_TOOLCHAIN_DIR:-}" ]; then
+                case "${CLANG_SOURCE}" in
+                    aosp)
+                        if ! find_cached_aosp_clang > /dev/null 2>&1 && ! command -v clang > /dev/null 2>&1; then
+                            need_curl=1
+                        fi
+                        ;;
+                    llvm)
+                        if ! find_cached_llvm > /dev/null 2>&1 && ! command -v clang > /dev/null 2>&1; then
+                            need_curl=1
+                        fi
+                        ;;
+                esac
+            fi
+            ;;
+        gcc)
+            deps="${deps} zstd"
+            if [ -z "${GCC_TOOLCHAIN_DIR:-}" ] && [ -z "${CROSS_COMPILE:-}" ]; then
+                if ! find_cached_gcc > /dev/null 2>&1 && ! command -v aarch64-linux-gnu-gcc > /dev/null 2>&1; then
+                    need_curl=1
+                    deps="${deps} xz"
+                fi
+            fi
+            ;;
+    esac
+
+    if ! find_mkdtimg > /dev/null 2>&1; then
+        need_curl=1
     fi
 
-    if [ "${SIGN}" = "1" ]; then
-        deps="${deps} java"
+    if [ "${SIGN}" = "1" ] && ! find_zipsigner > /dev/null 2>&1; then
+        need_curl=1
     fi
+
+    [ "${need_curl}" = "1" ] && deps="${deps} curl"
 
     for cmd in ${deps}; do
         if ! command -v "${cmd}" > /dev/null 2>&1; then
@@ -188,20 +368,46 @@ check_dependencies() {
 #==============================================================================
 
 fetch_gcc_toolchain() {
+    if [ -n "${GCC_TOOLCHAIN_DIR:-}" ]; then
+        GCC_TOOLCHAIN_DIR="${GCC_TOOLCHAIN_DIR%/}"
+        if [ -x "${GCC_TOOLCHAIN_DIR}/gcc-arm64/bin/aarch64-linux-gnu-gcc" ] || [ -x "${GCC_TOOLCHAIN_DIR}/bin/aarch64-linux-gnu-gcc" ]; then
+            msg "Using specified GCC toolchain: ${GCC_TOOLCHAIN_DIR}"
+            return 0
+        fi
+    fi
+
+    if [ -n "${CROSS_COMPILE:-}" ] && command -v "${CROSS_COMPILE}gcc" > /dev/null 2>&1; then
+        msg "Using pre-configured CROSS_COMPILE: ${CROSS_COMPILE}"
+        return 0
+    fi
+
+    local cached_dir
+    if cached_dir=$(find_cached_gcc); then
+        msg "GCC toolchain already cached: ${cached_dir}"
+        GCC_TOOLCHAIN_DIR="${cached_dir}"
+        return 0
+    fi
+
     msg "Fetching latest GCC toolchain release..."
 
-    local tag
-    tag=$(curl -fsSL "https://gitlab.com/api/v4/projects/${GCC_REPO}/releases" \
-        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1) || true
+    local tag=""
+    tag=$(curl -fsSL --connect-timeout 5 "https://gitlab.com/api/v4/projects/${GCC_REPO}/releases" 2>/dev/null \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)
 
     if [ -z "${tag}" ]; then
-        err "Failed to fetch latest GCC toolchain tag"
+        if command -v aarch64-linux-gnu-gcc > /dev/null 2>&1; then
+            warn "Could not reach GCC releases server (offline?). Falling back to system aarch64-linux-gnu-gcc"
+            CROSS_COMPILE="aarch64-linux-gnu-"
+            [ -z "${CROSS_COMPILE_COMPAT:-}" ] && command -v arm-linux-gnueabihf-gcc > /dev/null 2>&1 && CROSS_COMPILE_COMPAT="arm-linux-gnueabihf-"
+            return 0
+        fi
+        err "Failed to fetch latest GCC toolchain tag (offline?) and no local GCC found. Set GCC_TOOLCHAIN_DIR or CROSS_COMPILE."
     fi
 
     msg "Latest GCC toolchain: ${tag}"
 
     local gcc_dir="${KERNEL_DIR}/gcc-${tag}"
-    if [ -f "${gcc_dir}/.done" ]; then
+    if [ -f "${gcc_dir}/.done" ] || [ -x "${gcc_dir}/gcc-arm64/bin/aarch64-linux-gnu-gcc" ]; then
         msg "GCC toolchain already cached: ${gcc_dir}"
         GCC_TOOLCHAIN_DIR="${gcc_dir}"
         return 0
@@ -211,19 +417,29 @@ fetch_gcc_toolchain() {
     mkdir -p "${gcc_dir}"
 
     local assets
-    assets=$(curl -fsSL "https://gitlab.com/api/v4/projects/${GCC_REPO}/releases/${tag}" \
-        | sed -n 's/.*"direct_asset_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    assets=$(curl -fsSL --connect-timeout 10 "https://gitlab.com/api/v4/projects/${GCC_REPO}/releases/${tag}" 2>/dev/null \
+        | sed -n 's/.*"direct_asset_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
 
     local arm64_url arm_url
     arm64_url=$(echo "${assets}" | grep 'toolchain-arm64-.*\.tar\.zst$' || true)
     arm_url=$(echo "${assets}" | grep 'toolchain-arm-' | grep -v arm64 | grep '\.tar\.zst$' || true)
 
     if [ -z "${arm64_url}" ]; then
+        if command -v aarch64-linux-gnu-gcc > /dev/null 2>&1; then
+            warn "Failed to find arm64 GCC in release. Falling back to system aarch64-linux-gnu-gcc"
+            CROSS_COMPILE="aarch64-linux-gnu-"
+            return 0
+        fi
         err "Failed to find arm64 GCC toolchain in release ${tag}"
     fi
 
     msg "Downloading arm64 GCC toolchain..."
-    if ! curl -fsSLo "${gcc_dir}/arm64.tar.zst" "${arm64_url}"; then
+    if ! curl -fsSL --connect-timeout 10 -o "${gcc_dir}/arm64.tar.zst" "${arm64_url}"; then
+        if command -v aarch64-linux-gnu-gcc > /dev/null 2>&1; then
+            warn "Failed to download arm64 GCC (offline?). Falling back to system aarch64-linux-gnu-gcc"
+            CROSS_COMPILE="aarch64-linux-gnu-"
+            return 0
+        fi
         err "Failed to download arm64 GCC toolchain"
     fi
     msg "Extracting arm64 GCC toolchain..."
@@ -234,14 +450,13 @@ fetch_gcc_toolchain() {
 
     if [ -n "${arm_url}" ]; then
         msg "Downloading arm32 GCC toolchain..."
-        if ! curl -fsSLo "${gcc_dir}/arm.tar.zst" "${arm_url}"; then
-            err "Failed to download arm32 GCC toolchain"
+        if curl -fsSL --connect-timeout 10 -o "${gcc_dir}/arm.tar.zst" "${arm_url}"; then
+            msg "Extracting arm32 GCC toolchain..."
+            tar -I zstd -xf "${gcc_dir}/arm.tar.zst" -C "${gcc_dir}" 2>/dev/null || true
+            rm -f "${gcc_dir}/arm.tar.zst"
+        else
+            warn "Failed to download arm32 GCC toolchain (optional), skipping"
         fi
-        msg "Extracting arm32 GCC toolchain..."
-        if ! tar -I zstd -xf "${gcc_dir}/arm.tar.zst" -C "${gcc_dir}"; then
-            err "Failed to extract arm32 GCC toolchain"
-        fi
-        rm -f "${gcc_dir}/arm.tar.zst"
     fi
 
     touch "${gcc_dir}/.done"
@@ -254,27 +469,59 @@ fetch_gcc_toolchain() {
 #==============================================================================
 
 fetch_aosp_clang() {
+    if [ -n "${CLANG_TOOLCHAIN_DIR:-}" ]; then
+        CLANG_TOOLCHAIN_DIR="${CLANG_TOOLCHAIN_DIR%/}"
+        if [ -x "${CLANG_TOOLCHAIN_DIR}/bin/clang" ]; then
+            msg "Using specified Clang toolchain: ${CLANG_TOOLCHAIN_DIR}"
+            return 0
+        elif [ -x "${CLANG_TOOLCHAIN_DIR}/clang" ]; then
+            CLANG_TOOLCHAIN_DIR="$(dirname "${CLANG_TOOLCHAIN_DIR}")"
+            msg "Using specified Clang toolchain: ${CLANG_TOOLCHAIN_DIR}"
+            return 0
+        fi
+    fi
+
+    local cached_dir
+    if cached_dir=$(find_cached_aosp_clang); then
+        msg "AOSP Clang already cached: ${cached_dir}"
+        CLANG_TOOLCHAIN_DIR="${cached_dir}"
+        return 0
+    fi
+
     # Resolve which prebuilt to use: pinned name or latest from the branch.
-    local clang_name="${CLANG_PREBUILT_NAME}"
+    local clang_name="${CLANG_PREBUILT_NAME:-}"
 
     if [ -z "${clang_name}" ]; then
         msg "Discovering latest AOSP Clang prebuilt..."
-        clang_name=$(curl -fsSL "${CLANG_PREBUILT_BASE}/+/${CLANG_PREBUILT_BRANCH}" \
+        clang_name=$(curl -fsSL --connect-timeout 5 "${CLANG_PREBUILT_BASE}/+/${CLANG_PREBUILT_BRANCH}" 2>/dev/null \
             | grep -oE 'clang-[r0-9]+[0-9]' \
             | sed 's/^clang-//' \
             | sort -t r -k2 -V \
-            | tail -n1)
-        if [ -z "${clang_name}" ]; then
-            err "Failed to discover latest AOSP Clang prebuilt from ${CLANG_PREBUILT_BASE}"
+            | tail -n1 || true)
+        if [ -n "${clang_name}" ]; then
+            clang_name="clang-${clang_name}"
+            msg "Latest AOSP Clang: ${clang_name}"
         fi
-        clang_name="clang-${clang_name}"
-        msg "Latest AOSP Clang: ${clang_name}"
+    fi
+
+    if [ -z "${clang_name}" ]; then
+        if command -v clang > /dev/null 2>&1; then
+            local sys_clang sys_dir
+            sys_clang=$(command -v clang)
+            sys_dir=$(dirname "$(dirname "${sys_clang}")")
+            if [ -x "${sys_dir}/bin/clang" ]; then
+                warn "Could not reach AOSP prebuilt server (offline?). Falling back to system Clang: ${sys_dir}"
+                CLANG_TOOLCHAIN_DIR="${sys_dir}"
+                return 0
+            fi
+        fi
+        err "Failed to discover AOSP Clang prebuilt (offline?) and no local Clang found. Set CLANG_TOOLCHAIN_DIR."
     fi
 
     msg "Fetching AOSP prebuilt Clang (${clang_name})..."
 
     local clang_dir="${KERNEL_DIR}/${clang_name}"
-    if [ -f "${clang_dir}/.done" ]; then
+    if [ -f "${clang_dir}/.done" ] || [ -x "${clang_dir}/bin/clang" ]; then
         msg "AOSP Clang already cached: ${clang_dir}"
         CLANG_TOOLCHAIN_DIR="${clang_dir}"
         return 0
@@ -283,8 +530,16 @@ fetch_aosp_clang() {
     local url="${CLANG_PREBUILT_BASE}/+archive/${CLANG_PREBUILT_BRANCH}/${clang_name}.tar.gz"
     msg "Downloading AOSP Clang..."
     local tarball="/tmp/${clang_name}.tar.gz"
-    if ! curl -fsSLo "${tarball}" "${url}"; then
-        err "Failed to download AOSP Clang from ${url}"
+    if ! curl -fsSL --connect-timeout 10 -o "${tarball}" "${url}"; then
+        if command -v clang > /dev/null 2>&1; then
+            local sys_clang sys_dir
+            sys_clang=$(command -v clang)
+            sys_dir=$(dirname "$(dirname "${sys_clang}")")
+            warn "Failed to download AOSP Clang (offline?). Falling back to system Clang: ${sys_dir}"
+            CLANG_TOOLCHAIN_DIR="${sys_dir}"
+            return 0
+        fi
+        err "Failed to download AOSP Clang from ${url} (offline?). Set CLANG_TOOLCHAIN_DIR to use local toolchain."
     fi
 
     msg "Extracting AOSP Clang..."
@@ -305,25 +560,55 @@ fetch_aosp_clang() {
 #==============================================================================
 
 fetch_clang_toolchain() {
+    if [ -n "${CLANG_TOOLCHAIN_DIR:-}" ]; then
+        CLANG_TOOLCHAIN_DIR="${CLANG_TOOLCHAIN_DIR%/}"
+        if [ -x "${CLANG_TOOLCHAIN_DIR}/bin/clang" ]; then
+            msg "Using specified Clang toolchain: ${CLANG_TOOLCHAIN_DIR}"
+            return 0
+        elif [ -x "${CLANG_TOOLCHAIN_DIR}/clang" ]; then
+            CLANG_TOOLCHAIN_DIR="$(dirname "${CLANG_TOOLCHAIN_DIR}")"
+            msg "Using specified Clang toolchain: ${CLANG_TOOLCHAIN_DIR}"
+            return 0
+        fi
+    fi
+
+    local cached_dir
+    if cached_dir=$(find_cached_llvm); then
+        msg "LLVM toolchain already cached: ${cached_dir}"
+        CLANG_TOOLCHAIN_DIR="${cached_dir}"
+        return 0
+    fi
+
     msg "Fetching latest LLVM toolchain..."
 
-    local version="${LLVM_VERSION}"
+    local version="${LLVM_VERSION:-}"
 
     if [ -z "${version}" ]; then
-        version=$(curl -fsSL "${LLVM_BASE_URL}/" \
+        version=$(curl -fsSL --connect-timeout 5 "${LLVM_BASE_URL}/" 2>/dev/null \
             | sed -n 's/.*llvm-\([0-9]*\.[0-9]*\.[0-9]*\)-x86_64\.tar\.xz.*/\1/p' \
             | sort -t. -k1,1V -k2,2n -k3,3n \
-            | tail -n1) || true
+            | tail -n1 || true)
+        if [ -n "${version}" ]; then
+            msg "Latest LLVM: ${version}"
+        fi
     fi
 
     if [ -z "${version}" ]; then
-        err "Failed to determine LLVM version (set LLVM_VERSION to pin one)"
+        if command -v clang > /dev/null 2>&1; then
+            local sys_clang sys_dir
+            sys_clang=$(command -v clang)
+            sys_dir=$(dirname "$(dirname "${sys_clang}")")
+            if [ -x "${sys_dir}/bin/clang" ]; then
+                warn "Could not reach LLVM server (offline?). Falling back to system Clang: ${sys_dir}"
+                CLANG_TOOLCHAIN_DIR="${sys_dir}"
+                return 0
+            fi
+        fi
+        err "Failed to determine LLVM version (offline?) and no local Clang found. Set LLVM_VERSION or CLANG_TOOLCHAIN_DIR."
     fi
 
-    msg "Latest LLVM: ${version}"
-
     local clang_dir="${KERNEL_DIR}/llvm-${version}"
-    if [ -f "${clang_dir}/.done" ]; then
+    if [ -f "${clang_dir}/.done" ] || [ -x "${clang_dir}/bin/clang" ]; then
         msg "LLVM toolchain already cached: ${clang_dir}"
         CLANG_TOOLCHAIN_DIR="${clang_dir}"
         return 0
@@ -335,8 +620,16 @@ fetch_clang_toolchain() {
     local url="${LLVM_BASE_URL}/${tarball}"
     local tmpdir="/tmp/llvm-extract.$$"
 
-    if ! curl -fsSLo "/tmp/${tarball}" "${url}"; then
-        err "Failed to download LLVM ${version}"
+    if ! curl -fsSL --connect-timeout 10 -o "/tmp/${tarball}" "${url}"; then
+        if command -v clang > /dev/null 2>&1; then
+            local sys_clang sys_dir
+            sys_clang=$(command -v clang)
+            sys_dir=$(dirname "$(dirname "${sys_clang}")")
+            warn "Failed to download LLVM (offline?). Falling back to system Clang: ${sys_dir}"
+            CLANG_TOOLCHAIN_DIR="${sys_dir}"
+            return 0
+        fi
+        err "Failed to download LLVM ${version} (offline?). Set CLANG_TOOLCHAIN_DIR to use local toolchain."
     fi
     msg "Extracting LLVM toolchain..."
     mkdir -p "${tmpdir}"
@@ -373,8 +666,18 @@ setup_environment() {
     case "${TOOLCHAIN}" in
         gcc)
             fetch_gcc_toolchain
-            export CROSS_COMPILE="${GCC_TOOLCHAIN_DIR}/gcc-arm64/bin/aarch64-linux-gnu-"
-            export CROSS_COMPILE_COMPAT="${GCC_TOOLCHAIN_DIR}/gcc-arm/bin/arm-linux-gnueabihf-"
+            if [ -n "${GCC_TOOLCHAIN_DIR:-}" ]; then
+                if [ -d "${GCC_TOOLCHAIN_DIR}/gcc-arm64/bin" ]; then
+                    export CROSS_COMPILE="${CROSS_COMPILE:-${GCC_TOOLCHAIN_DIR}/gcc-arm64/bin/aarch64-linux-gnu-}"
+                    export CROSS_COMPILE_COMPAT="${CROSS_COMPILE_COMPAT:-${GCC_TOOLCHAIN_DIR}/gcc-arm/bin/arm-linux-gnueabihf-}"
+                else
+                    export CROSS_COMPILE="${CROSS_COMPILE:-${GCC_TOOLCHAIN_DIR}/bin/aarch64-linux-gnu-}"
+                    export CROSS_COMPILE_COMPAT="${CROSS_COMPILE_COMPAT:-${GCC_TOOLCHAIN_DIR}/bin/arm-linux-gnueabihf-}"
+                fi
+            else
+                export CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
+                export CROSS_COMPILE_COMPAT="${CROSS_COMPILE_COMPAT:-arm-linux-gnueabihf-}"
+            fi
             ;;
         clang)
             case "${CLANG_SOURCE}" in
@@ -394,21 +697,39 @@ setup_environment() {
             ;;
     esac
 
-    # Setup AnyKernel3
-    if [ ! -d "${AK3_DIR}" ]; then
-        msg "Cloning AnyKernel3 from ${AK3_REPO}..."
-        if ! git clone "https://github.com/${AK3_REPO}.git" \
-            --single-branch --depth 1 "${AK3_DIR}"; then
-            err "Failed to clone AnyKernel3"
+    # Normalize CLANG_TOOLCHAIN_DIR if set
+    if [ -n "${CLANG_TOOLCHAIN_DIR:-}" ]; then
+        CLANG_TOOLCHAIN_DIR="${CLANG_TOOLCHAIN_DIR%/}"
+        if [ -x "${CLANG_TOOLCHAIN_DIR}/clang" ] && [ ! -d "${CLANG_TOOLCHAIN_DIR}/bin" ]; then
+            CLANG_TOOLCHAIN_DIR="$(dirname "${CLANG_TOOLCHAIN_DIR}")"
         fi
     fi
 
-    # Setup KernelSU
-    if [ ! -d "${KSU_DIR}" ]; then
-        msg "Cloning KernelSU from ${KSU_REPO}..."
-        if ! git clone "https://github.com/${KSU_REPO}.git" \
-            -b "${KSU_BRANCH}" --single-branch --depth 1 "${KSU_DIR}"; then
-            err "Failed to clone KernelSU"
+    # Setup AnyKernel3
+    if [ ! -d "${AK3_DIR}" ]; then
+        if [ -d "${SCRIPT_DIR}/../AnyKernel3" ]; then
+            AK3_DIR="${SCRIPT_DIR}/../AnyKernel3"
+            AK3_IMAGE="${AK3_DIR}/${KERNEL_IMAGE}"
+            AK3_DTB="${AK3_DIR}/dtb"
+            AK3_DTBO="${AK3_DIR}/dtbo.img"
+            msg "Using AnyKernel3 from: ${AK3_DIR}"
+        else
+            msg "Cloning AnyKernel3 from ${AK3_REPO}..."
+            if ! git clone "https://github.com/${AK3_REPO}.git" \
+                --single-branch --depth 1 "${AK3_DIR}" 2>/dev/null; then
+                warn "Failed to clone AnyKernel3 (offline?). Flashable zip packaging will be skipped."
+            fi
+        fi
+    fi
+
+    # Setup KernelSU (only when KSU=1)
+    if [ "${KSU}" = "1" ]; then
+        if [ ! -d "${KSU_DIR}" ]; then
+            msg "Cloning KernelSU from ${KSU_REPO}..."
+            if ! git clone "https://github.com/${KSU_REPO}.git" \
+                -b "${KSU_BRANCH}" --single-branch --depth 1 "${KSU_DIR}"; then
+                err "KernelSU not found at ${KSU_DIR} and could not be cloned (offline?). Please provide KernelSU at ${KSU_DIR} or set KSU_DIR."
+            fi
         fi
     fi
 
@@ -434,9 +755,9 @@ setup_environment() {
     export PROCS
 
     # Kernel version and git info
-    KERVER=$(make kernelversion)
-    COMMIT_HEAD=$(git log -n 1 --oneline)
-    CI_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    KERVER=$(make kernelversion 2>/dev/null || echo "unknown")
+    COMMIT_HEAD=$(git log -n 1 --oneline 2>/dev/null || echo "unknown")
+    CI_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     export KERVER COMMIT_HEAD CI_BRANCH
 
     # Build number handling: CI=1 or RELEASE=1 always #1, local increments .build_number
@@ -683,13 +1004,16 @@ generate_dtbo() {
     local variant="$1"
     msg "Generating dtbo.img..."
 
-    if [ ! -f "${KERNEL_DIR}/mkdtimg" ]; then
+    local mkdtimg_bin
+    if ! mkdtimg_bin=$(find_mkdtimg); then
         msg "Downloading mkdtimg..."
-        if ! curl -fsSLo "${KERNEL_DIR}/mkdtimg" "${MKDTIMG_URL}"; then
-            err "Failed to download mkdtimg"
+        if curl -fsSL --connect-timeout 10 -o "${KERNEL_DIR}/mkdtimg" "${MKDTIMG_URL}"; then
+            chmod +x "${KERNEL_DIR}/mkdtimg"
+            mkdtimg_bin="${KERNEL_DIR}/mkdtimg"
+        else
+            err "mkdtimg not found and could not be downloaded (offline?). Please provide mkdtimg in ${KERNEL_DIR} or set MKDTIMG."
         fi
     fi
-    chmod +x "${KERNEL_DIR}/mkdtimg"
 
     local dtbo_files
     dtbo_files=$(find "${OUT_DIR}" -name 'gs*.dtbo' | sort)
@@ -700,7 +1024,7 @@ generate_dtbo() {
 
     cd "${KERNEL_DIR}"
     # shellcheck disable=SC2086
-    if ! ./mkdtimg create "${OUT_DIR}/dtbo.img" ${MKDTIMG_FLAGS} ${dtbo_files}; then
+    if ! "${mkdtimg_bin}" create "${OUT_DIR}/dtbo.img" ${MKDTIMG_FLAGS} ${dtbo_files}; then
         err "Failed to generate dtbo.img"
     fi
 
@@ -729,6 +1053,13 @@ construct_zip_filename() {
 generate_zip() {
     local variant="$1"
     local zip_suffix="$2"
+
+    if [ ! -d "${AK3_DIR}" ]; then
+        warn "AnyKernel3 not found at ${AK3_DIR}. Skipping flashable zip packaging."
+        msg "Kernel build output is available at: ${IMAGE_PATH}"
+        return 0
+    fi
+
     local zip_final
     zip_final=$(construct_zip_filename "${zip_suffix}")
 
@@ -771,26 +1102,32 @@ generate_zip() {
 
     local zip_final_path
     if [ "${SIGN}" = "1" ]; then
-        if [ ! -f "${KERNEL_DIR}/zipsigner-3.0.jar" ]; then
+        local zipsigner_jar
+        if ! zipsigner_jar=$(find_zipsigner); then
             msg "Downloading zipsigner..."
-            if ! curl -fsSLo "${KERNEL_DIR}/zipsigner-3.0.jar" \
+            if curl -fsSL --connect-timeout 10 -o "${KERNEL_DIR}/zipsigner-3.0.jar" \
                 "https://raw.githubusercontent.com/raphielscape/scripts/master/zipsigner-3.0.jar"; then
-                cd "${KERNEL_DIR}"
-                err "Failed to download zipsigner"
+                zipsigner_jar="${KERNEL_DIR}/zipsigner-3.0.jar"
+            else
+                warn "Failed to download zipsigner (offline?). Leaving zip unsigned."
             fi
         fi
 
-        msg "Signing ${zip_final}..."
-        if ! java -jar "${KERNEL_DIR}/zipsigner-3.0.jar" unsigned.zip "${zip_final}"; then
-            cd "${KERNEL_DIR}"
-            err "Failed to sign zip"
-        fi
+        if [ -n "${zipsigner_jar:-}" ] && [ -f "${zipsigner_jar}" ]; then
+            msg "Signing ${zip_final}..."
+            if ! java -jar "${zipsigner_jar}" unsigned.zip "${zip_final}"; then
+                cd "${KERNEL_DIR}"
+                err "Failed to sign zip"
+            fi
 
-        if [ ! -f "${zip_final}" ]; then
-            cd "${KERNEL_DIR}"
-            err "Failed to sign zip"
+            if [ ! -f "${zip_final}" ]; then
+                cd "${KERNEL_DIR}"
+                err "Failed to sign zip"
+            fi
+            rm -f unsigned.zip
+        else
+            mv "unsigned.zip" "${zip_final}"
         fi
-        rm -f unsigned.zip
         zip_final_path="${AK3_DIR}/${zip_final}"
     else
         mv "unsigned.zip" "${zip_final}"
