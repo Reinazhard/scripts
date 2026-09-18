@@ -599,14 +599,17 @@ setup_environment() {
     CI_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     export KERVER COMMIT_HEAD CI_BRANCH
 
+    BUMP="${BUMP:-1}"
     if [ "${IS_RELEASE}" = "1" ]; then
         KERNEL_BUILD_NUM="1"
+    elif [ "${BUMP}" = "0" ] && [ -f "${KERNEL_BUILD_NUM_FILE}" ]; then
+        KERNEL_BUILD_NUM=$(cat "${KERNEL_BUILD_NUM_FILE}")
     elif [ -f "${KERNEL_BUILD_NUM_FILE}" ]; then
         KERNEL_BUILD_NUM=$(($(cat "${KERNEL_BUILD_NUM_FILE}") + 1))
     else
         KERNEL_BUILD_NUM="0"
     fi
-    [ "${IS_RELEASE}" = "0" ] && echo "${KERNEL_BUILD_NUM}" > "${KERNEL_BUILD_NUM_FILE}"
+    [ "${IS_RELEASE}" = "0" ] && [ "${BUMP}" != "0" ] && echo "${KERNEL_BUILD_NUM}" > "${KERNEL_BUILD_NUM_FILE}"
     export KERNEL_BUILD_NUM
 
     mkdir -p "${OUT_DIR}"
@@ -721,18 +724,27 @@ make_kernel() {
 
 configure_kernel() {
     local variant="$1"
+    local config_file="${OUT_DIR}/.config"
+    local variant_file="${OUT_DIR}/.config_variant"
+
+    if [ "${CLEAN}" = "0" ] && [ -f "${config_file}" ] && [ -f "${variant_file}" ] && [ "$(cat "${variant_file}" 2>/dev/null)" = "${variant}" ]; then
+        msg "Reusing existing ${variant} configuration..."
+        make_kernel olddefconfig >/dev/null || err "Failed to finalize configuration"
+        return 0
+    fi
+
     msg "Configuring ${variant} kernel..."
 
     make_kernel "${DEFCONFIG}" >/dev/null || err "Failed to generate ${DEFCONFIG}"
 
     if [ "${variant}" = "KernelSU" ]; then
         msg "Enabling KernelSU features..."
-        scripts/config --file "${OUT_DIR}/.config" -e KSU || err "Failed to enable KernelSU features"
+        scripts/config --file "${config_file}" -e KSU || err "Failed to enable KernelSU features"
     fi
 
     if [ "${TOOLCHAIN}" = "clang" ] && [ "${IS_RELEASE}" = "1" ]; then
         msg "Enabling clang hardening features (CFI, SCS, LTO_THIN)..."
-        scripts/config --file "${OUT_DIR}/.config" \
+        scripts/config --file "${config_file}" \
             -e CONFIG_CFI_CLANG \
             -e CONFIG_SHADOW_CALL_STACK \
             -e CONFIG_LTO_CLANG_THIN \
@@ -740,6 +752,7 @@ configure_kernel() {
     fi
 
     make_kernel olddefconfig >/dev/null || err "Failed to finalize configuration"
+    echo "${variant}" > "${variant_file}"
     msg "Configuration complete"
 }
 
@@ -910,10 +923,6 @@ build_variant() {
     generate_dtbo "${variant}"
     generate_zip "${variant}" "${zip_suffix}"
 
-    msg "Cleaning up dtbo artifacts..."
-    find "${OUT_DIR}" -name 'gs*.dtbo' -delete
-    rm -f "${OUT_DIR}/dtbo.img"
-
     msg "${variant} build complete"
 }
 
@@ -1012,6 +1021,7 @@ Environment variables:
   CROSS_COMPILE       Prefix for GCC (e.g. aarch64-linux-gnu-)
   KSU                 Build KernelSU variant (0 or 1)
   CLEAN               Clean before build (0 or 1)
+  BUMP                Increment build number (0 or 1, default: 1)
   SIGN                Sign flashable zip (0 or 1)
   NOTIFY              Send Telegram notifications (0 or 1)
   RELEASE             Release build mode (0 or 1)
