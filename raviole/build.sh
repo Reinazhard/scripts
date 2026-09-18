@@ -40,7 +40,7 @@ TOOLCHAIN_CACHE_DIR="${TOOLCHAIN_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/andr
 AK3_DIR="${AK3_DIR:-}"
 AK3_REPO="${AK3_REPO:-Reinazhard/AnyKernel3}"
 
-# KernelSU (used when KSU=1)
+# KernelSU (required for Kconfig evaluation even when KSU=0)
 KSU_DIR="${KSU_DIR:-}"
 KSU_REPO="${KSU_REPO:-Reinazhard/KernelSU}"
 KSU_BRANCH="${KSU_BRANCH:-fork}"
@@ -123,6 +123,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "${KERNEL
 AK3_DIR="${AK3_DIR:-${KERNEL_DIR}/AnyKernel3}"
 [ ! -d "${AK3_DIR}" ] && [ -d "${SCRIPT_DIR}/../AnyKernel3" ] && AK3_DIR="${SCRIPT_DIR}/../AnyKernel3"
 KSU_DIR="${KSU_DIR:-${KERNEL_DIR}/KernelSU}"
+[ ! -d "${KSU_DIR}" ] && [ -d "${SCRIPT_DIR}/../KernelSU" ] && KSU_DIR="${SCRIPT_DIR}/../KernelSU"
 
 # Toolchain sources
 MKDTIMG_URL="https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/utility/mkdtimg"
@@ -572,11 +573,19 @@ setup_environment() {
     AK3_DTB="${AK3_DIR}/dtb"
     AK3_DTBO="${AK3_DIR}/dtbo.img"
 
-    # KernelSU setup (only when KSU=1)
-    if [ "${KSU}" = "1" ] && [ ! -d "${KSU_DIR}" ]; then
-        msg "Cloning KernelSU from ${KSU_REPO}..."
-        git clone "https://github.com/${KSU_REPO}.git" -b "${KSU_BRANCH}" --single-branch --depth 1 "${KSU_DIR}" || \
-            err "KernelSU not found at ${KSU_DIR} and could not be cloned (offline?). Set KSU_DIR."
+    # KernelSU setup (required for Kconfig evaluation even when KSU=0)
+    if [ ! -d "${KSU_DIR}" ]; then
+        if [ -d "${SCRIPT_DIR}/../KernelSU" ]; then
+            KSU_DIR="${SCRIPT_DIR}/../KernelSU"
+            msg "Using KernelSU from: ${KSU_DIR}"
+        else
+            msg "Cloning KernelSU from ${KSU_REPO}..."
+            git clone "https://github.com/${KSU_REPO}.git" -b "${KSU_BRANCH}" --single-branch --depth 1 "${KSU_DIR}" || \
+                err "KernelSU not found at ${KSU_DIR} and could not be cloned (offline?). Set KSU_DIR."
+        fi
+    fi
+    if [ "${KSU_DIR}" != "${KERNEL_DIR}/KernelSU" ] && [ ! -e "${KERNEL_DIR}/KernelSU" ]; then
+        ln -sfn "${KSU_DIR}" "${KERNEL_DIR}/KernelSU"
     fi
 
     export ARCH="arm64"
