@@ -152,6 +152,35 @@ def import_via_subtree(module_name: str, local_path: str, repo_url: str, ref: st
         return False
 
 
+def fix_broken_symlinks(directory: str) -> tuple[int, int]:
+    """Fix broken symlinks in a directory tree.
+
+    For each broken symlink, attempts to resolve the target relative to the
+    symlink's parent directory within the same tree.
+
+    Returns:
+        Tuple of (fixed_count, unfixed_count).
+    """
+    fixed = 0
+    unfixed = 0
+    for dirpath, _, filenames in os.walk(directory, followlinks=False):
+        for fname in filenames:
+            full_path = os.path.join(dirpath, fname)
+            if not os.path.islink(full_path):
+                continue
+            target = os.readlink(full_path)
+            if os.path.exists(full_path):
+                continue
+            resolved = os.path.normpath(os.path.join(dirpath, target))
+            if os.path.exists(resolved):
+                os.remove(full_path)
+                os.symlink(resolved, full_path)
+                fixed += 1
+            else:
+                unfixed += 1
+    return fixed, unfixed
+
+
 def import_via_copy(module_name: str, source_path: str, dest_path: str, force: bool = False) -> bool:
     """Import module by copying from local source directory."""
     import shutil
@@ -170,7 +199,12 @@ def import_via_copy(module_name: str, source_path: str, dest_path: str, force: b
 
     try:
         print(f"Copying {module_name} from {source_path} to {dest_path}...")
-        shutil.copytree(source_path, dest_path)
+        shutil.copytree(source_path, dest_path, symlinks=True)
+        fixed, unfixed = fix_broken_symlinks(dest_path)
+        if fixed:
+            print(f"Fixed {fixed} broken symlink(s) in {module_name}")
+        if unfixed:
+            print(f"Warning: {unfixed} broken symlink(s) in {module_name} could not be resolved")
         print(f"Successfully copied {module_name}")
         return True
     except Exception as e:
