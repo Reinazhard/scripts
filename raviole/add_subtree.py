@@ -1,31 +1,36 @@
 """
-MIT License
+Import Android kernel modules and devices.
 
-Copyright (c) 2026 M. "Harumajati" Alfarozi
+This script imports Google-specific kernel modules and device trees from AOSP
+repositories using git subtree, or copies them from local directories.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Usage:
+    # Import from AOSP using git subtree
+    python add_subtree.py android-gs-raviole-6.1-android16
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+    # Import specific modules
+    python add_subtree.py main --modules amplifiers,gpu
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+    # Import from local directory
+    python add_subtree.py --import-method copy --source-dir /path/to/extracted/private
+
+    # Dry run (preview without executing)
+    python add_subtree.py android-gs-raviole-6.1-android16 --dry-run
+
+    # Parallel import with 4 workers
+    python add_subtree.py main -j 4
+
+See LICENSE file for copyright and license details.
 """
+
+from __future__ import annotations
 
 import argparse
 import subprocess
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional, Tuple
 from urllib.parse import urljoin
 
 # Module definitions with their respective repositories
@@ -67,7 +72,7 @@ DEVICES = {
 REPO_BASE = "https://android.googlesource.com/"
 
 
-def is_git_repo():
+def is_git_repo() -> bool:
     """Check if the current directory is inside a git repository."""
     try:
         subprocess.run(
@@ -80,45 +85,35 @@ def is_git_repo():
         return False
 
 
-def check_ref_exists(repo_url, ref):
-    """Check if a branch or tag exists in the remote repository."""
+def check_ref_exists(repo_url: str, ref: str, timeout: int = 30) -> Tuple[bool, Optional[str]]:
+    """Check if a branch, tag, or commit exists in the remote repository."""
     try:
-        # First try to check as a branch
-        result = subprocess.run(
-            ["git", "ls-remote", "--heads", repo_url, f"refs/heads/{ref}"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        if result.stdout.strip():
-            return True, "branch"
-
-        # If not found as branch, try as a tag
-        result = subprocess.run(
-            ["git", "ls-remote", "--tags", repo_url, f"refs/tags/{ref}"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        if result.stdout.strip():
-            return True, "tag"
-
-        # If still not found, try without refs prefix (for direct commit hashes)
         result = subprocess.run(
             ["git", "ls-remote", repo_url, ref],
             check=True,
             capture_output=True,
             text=True,
+            timeout=timeout,
         )
-        if result.stdout.strip():
-            return True, "commit"
+        if not result.stdout.strip():
+            return False, None
 
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            ref_path = line.split()[-1] if len(line.split()) >= 2 else ""
+            if ref_path.startswith("refs/heads/"):
+                return True, "branch"
+            if ref_path.startswith("refs/tags/"):
+                return True, "tag"
+
+        return True, "commit"
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False, None
-    except subprocess.CalledProcessError:
-        return False, None
 
 
-def import_via_subtree(module_name, local_path, repo_url, ref):
+def import_via_subtree(module_name: str, local_path: str, repo_url: str, ref: str, timeout: int = 300) -> bool:
     """Import module using git subtree from remote repository."""
     print(
         f"Adding subtree for {module_name} into {local_path} from {repo_url} (ref: {ref})..."
@@ -141,6 +136,7 @@ def import_via_subtree(module_name, local_path, repo_url, ref):
                 ref,
             ],
             check=True,
+            timeout=timeout,
         )
         print(f"Successfully added subtree for {module_name}")
         return True
@@ -149,9 +145,14 @@ def import_via_subtree(module_name, local_path, repo_url, ref):
             f"Error: Failed to add subtree for {module_name} from {repo_url}. Error: {e}"
         )
         return False
+    except subprocess.TimeoutExpired:
+        print(
+            f"Error: Subtree add for {module_name} timed out after {timeout}s."
+        )
+        return False
 
 
-def import_via_copy(module_name, source_path, dest_path, force=False):
+def import_via_copy(module_name: str, source_path: str, dest_path: str, force: bool = False) -> bool:
     """Import module by copying from local source directory."""
     import shutil
 
@@ -161,8 +162,8 @@ def import_via_copy(module_name, source_path, dest_path, force=False):
 
     if os.path.exists(dest_path):
         if not force:
-            print(f"Error: Destination {dest_path} already exists. Use --force to overwrite.")
-            sys.exit(1)
+            print(f"Warning: Destination {dest_path} already exists. Skipping (use --force to overwrite).")
+            return False
         else:
             print(f"Removing existing {dest_path}...")
             shutil.rmtree(dest_path)
@@ -177,16 +178,62 @@ def import_via_copy(module_name, source_path, dest_path, force=False):
         return False
 
 
+def process_single_item(
+    item_key: str,
+    repo_name: str,
+    item_type: str,
+    import_method: str,
+    ref: Optional[str],
+    source_dir: Optional[str],
+    force: bool,
+    dry_run: bool,
+    progress: Optional[str] = None,
+) -> bool:
+    """Process a single module or device item. Returns True on success."""
+    dest_prefix = "google-modules" if item_type == "module" else "google-devices"
+    dest_path = f"{dest_prefix}/{item_key}"
+
+    if progress:
+        print(f"[{progress}] Processing {item_key}...")
+
+    if import_method == "subtree":
+        repo_url = urljoin(REPO_BASE, repo_name)
+        exists, ref_type = check_ref_exists(repo_url, ref)
+        if not exists:
+            print(f"Warning: Ref '{ref}' not found in {repo_name}. Skipping.")
+            return False
+        if ref_type:
+            print(f"Found '{ref}' as {ref_type} in {repo_name}")
+        
+        if dry_run:
+            print(f"[dry-run] Would add subtree for {item_key} into {dest_path}")
+            return True
+        return import_via_subtree(item_key, dest_path, repo_url, ref)
+    else:
+        # Copy mode
+        source_path = os.path.join(source_dir, dest_prefix, item_key)
+        if item_type == "device":
+            if not os.path.isdir(source_path):
+                source_path = os.path.join(source_dir, "devices", "google", item_key)
+        
+        if dry_run:
+            print(f"[dry-run] Would copy {item_key} from {source_path} to {dest_path}")
+            return True
+        return import_via_copy(item_key, source_path, dest_path, force)
+
+
 def process_modules_and_devices(
-    ref=None,
-    modules_filter=None,
-    devices_filter=None,
-    modules_only=False,
-    devices_only=False,
-    import_method="subtree",
-    source_dir=None,
-    force=False,
-):
+    ref: Optional[str] = None,
+    modules_filter: Optional[list[str]] = None,
+    devices_filter: Optional[list[str]] = None,
+    modules_only: bool = False,
+    devices_only: bool = False,
+    import_method: str = "subtree",
+    source_dir: Optional[str] = None,
+    force: bool = False,
+    dry_run: bool = False,
+    jobs: int = 1,
+) -> None:
     """Process and import modules and devices using specified method."""
 
     # Validate import method
@@ -203,112 +250,60 @@ def process_modules_and_devices(
     else:
         sys.exit(f"Error: Invalid import method: {import_method}")
 
-    success_count = 0
-    total_count = 0
-
-    # Process modules unless devices_only is specified
+    # Build work items list
+    work_items = []
     if not devices_only:
         modules_to_process = MODULES
         if modules_filter:
-            modules_to_process = {
-                k: v for k, v in MODULES.items() if k in modules_filter
-            }
+            modules_to_process = {k: v for k, v in MODULES.items() if k in modules_filter}
             if not modules_to_process:
-                print(
-                    f"Warning: None of the specified modules found. Available modules: {', '.join(MODULES.keys())}"
-                )
+                print(f"Warning: None of the specified modules found. Available modules: {', '.join(MODULES.keys())}")
+        for module_key, repo_name in modules_to_process.items():
+            work_items.append((module_key, repo_name, "module"))
 
-        if modules_to_process:
-            total_count += len(modules_to_process)
-            
-            if import_method == "subtree":
-                print(
-                    f"Processing {len(modules_to_process)} modules from AOSP repository using ref '{ref}'..."
-                )
-            else:
-                print(
-                    f"Processing {len(modules_to_process)} modules from {source_dir}..."
-                )
-
-            for module_key, repo_name in modules_to_process.items():
-                dest_path = f"google-modules/{module_key}"
-
-                if import_method == "subtree":
-                    repo_url = urljoin(REPO_BASE, repo_name)
-                    exists, ref_type = check_ref_exists(repo_url, ref)
-                    if not exists:
-                        print(f"Warning: Ref '{ref}' not found in {repo_name}. Skipping.")
-                        continue
-                    if ref_type:
-                        print(f"Found '{ref}' as {ref_type} in {repo_name}")
-                    
-                    if import_via_subtree(module_key, dest_path, repo_url, ref):
-                        success_count += 1
-                else:
-                    # Copy mode: look for module in source_dir
-                    source_path = os.path.join(source_dir, "google-modules", module_key)
-                    if import_via_copy(module_key, source_path, dest_path, force):
-                        success_count += 1
-
-    # Process devices unless modules_only is specified
     if not modules_only:
         devices_to_process = DEVICES
         if devices_filter:
-            devices_to_process = {
-                k: v for k, v in DEVICES.items() if k in devices_filter
-            }
+            devices_to_process = {k: v for k, v in DEVICES.items() if k in devices_filter}
             if not devices_to_process:
-                print(
-                    f"Warning: None of the specified devices found. Available devices: {', '.join(DEVICES.keys())}"
-                )
+                print(f"Warning: None of the specified devices found. Available devices: {', '.join(DEVICES.keys())}")
+        for device_key, repo_name in devices_to_process.items():
+            work_items.append((device_key, repo_name, "device"))
 
-        if devices_to_process:
-            total_count += len(devices_to_process)
-            
-            if import_method == "subtree":
-                print(
-                    f"Processing {len(devices_to_process)} devices from AOSP repository using ref '{ref}'..."
-                )
-            else:
-                print(
-                    f"Processing {len(devices_to_process)} devices from {source_dir}..."
-                )
-
-            for device_key, repo_name in devices_to_process.items():
-                dest_path = f"google-devices/{device_key}"
-
-                if import_method == "subtree":
-                    repo_url = urljoin(REPO_BASE, repo_name)
-                    exists, ref_type = check_ref_exists(repo_url, ref)
-                    if not exists:
-                        print(f"Warning: Ref '{ref}' not found in {repo_name}. Skipping.")
-                        continue
-                    if ref_type:
-                        print(f"Found '{ref}' as {ref_type} in {repo_name}")
-                    
-                    if import_via_subtree(device_key, dest_path, repo_url, ref):
-                        success_count += 1
-                else:
-                    # Copy mode: look for device in source_dir
-                    # Try both google-devices and devices/google
-                    source_path = os.path.join(source_dir, "google-devices", device_key)
-                    if not os.path.isdir(source_path):
-                        source_path = os.path.join(source_dir, "devices", "google", device_key)
-                    
-                    if import_via_copy(device_key, source_path, dest_path, force):
-                        success_count += 1
-
-    if total_count == 0:
+    if not work_items:
         print("No modules or devices to process.")
         return
 
-    print(f"\nCompleted: {success_count}/{total_count} items processed successfully.")
+    total_count = len(work_items)
+    item_type = "modules" if not devices_only else "devices"
+    if import_method == "subtree":
+        print(f"Processing {total_count} {item_type} from AOSP repository using ref '{ref}'...")
+    else:
+        print(f"Processing {total_count} {item_type} from {source_dir}...")
 
+    success_count = 0
+    if jobs > 1:
+        with ThreadPoolExecutor(max_workers=jobs) as executor:
+            futures = {
+                executor.submit(
+                    process_single_item, key, repo, typ, import_method, ref, source_dir, force, dry_run
+                ): key
+                for key, repo, typ in work_items
+            }
+            for i, future in enumerate(as_completed(futures), 1):
+                if future.result():
+                    success_count += 1
+    else:
+        for i, (key, repo, typ) in enumerate(work_items, 1):
+            if process_single_item(key, repo, typ, import_method, ref, source_dir, force, dry_run, f"{i}/{total_count}"):
+                success_count += 1
+
+    print(f"\nCompleted: {success_count}/{total_count} items processed successfully.")
     if success_count < total_count:
         print("Some items were skipped due to errors or missing refs.")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Import Android kernel modules and devices using git subtree or local copy.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -323,6 +318,11 @@ Examples (copy mode - from extracted tarball):
   %(prog)s --import-method copy --source-dir /path/to/extracted/private
   %(prog)s --import-method copy --source-dir ./private --modules gpu,amplifiers
   %(prog)s --import-method copy --source-dir ./vendor-tree --devices gs101 --force
+
+Examples (dry-run and parallel):
+  %(prog)s android-gs-raviole-6.1-android16 --dry-run
+  %(prog)s main -j 4 --modules amplifiers,gpu,nfc
+  %(prog)s android-16.0.0_r1 --log-file import.log
         """,
     )
 
@@ -384,70 +384,106 @@ Examples (copy mode - from extracted tarball):
         help="List all available modules and devices and exit",
     )
 
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview actions without executing",
+    )
+
+    parser.add_argument(
+        "-j", "--jobs",
+        type=int,
+        default=1,
+        help="Number of parallel import jobs (default: 1)",
+    )
+
+    parser.add_argument(
+        "--log-file",
+        help="Write output to log file",
+    )
+
     args = parser.parse_args()
 
-    # Handle listing options
-    if args.list_modules or args.list_all:
-        print("Available modules:")
-        for module in sorted(MODULES.keys()):
-            print(f"  {module}")
-        if not args.list_all:
+    # Set up file logging if specified
+    log_file = None
+    if args.log_file:
+        try:
+            log_file = open(args.log_file, "w")
+            sys.stdout = log_file
+            sys.stderr = log_file
+        except OSError as e:
+            sys.exit(f"Error: Cannot open log file {args.log_file}: {e}")
+
+    try:
+        # Handle listing options
+        if args.list_modules or args.list_all:
+            print("Available modules:")
+            for module in sorted(MODULES.keys()):
+                print(f"  {module}")
+            if not args.list_all:
+                sys.exit(0)
+
+        if args.list_devices or args.list_all:
+            if args.list_all:
+                print("\nAvailable devices:")
+            else:
+                print("Available devices:")
+            for device in sorted(DEVICES.keys()):
+                print(f"  {device}")
             sys.exit(0)
 
-    if args.list_devices or args.list_all:
-        if args.list_all:
-            print("\nAvailable devices:")
-        else:
-            print("Available devices:")
-        for device in sorted(DEVICES.keys()):
-            print(f"  {device}")
-        sys.exit(0)
+        # Validate arguments based on import method
+        if args.import_method == "subtree" and not args.ref:
+            parser.error("ref argument is required for subtree mode")
+        
+        if args.import_method == "copy" and not args.source_dir:
+            parser.error("--source-dir is required for copy mode")
 
-    # Validate arguments based on import method
-    if args.import_method == "subtree" and not args.ref:
-        parser.error("ref argument is required for subtree mode")
-    
-    if args.import_method == "copy" and not args.source_dir:
-        parser.error("--source-dir is required for copy mode")
+        # Validate conflicting options
+        if args.modules_only and args.devices_only:
+            sys.exit("Error: Cannot specify both --modules-only and --devices-only")
 
-    # Validate conflicting options
-    if args.modules_only and args.devices_only:
-        sys.exit("Error: Cannot specify both --modules-only and --devices-only")
+        # Parse modules filter
+        modules_filter = None
+        if args.modules:
+            modules_filter = [m.strip() for m in args.modules.split(",")]
+            invalid_modules = [m for m in modules_filter if m not in MODULES]
+            if invalid_modules:
+                print(f"Warning: Invalid modules specified: {', '.join(invalid_modules)}")
+                print(f"Valid modules: {', '.join(sorted(MODULES.keys()))}")
+                modules_filter = [m for m in modules_filter if m in MODULES]
+                if not modules_filter:
+                    sys.exit("Error: No valid modules specified.")
 
-    # Parse modules filter
-    modules_filter = None
-    if args.modules:
-        modules_filter = [m.strip() for m in args.modules.split(",")]
-        invalid_modules = [m for m in modules_filter if m not in MODULES]
-        if invalid_modules:
-            print(f"Warning: Invalid modules specified: {', '.join(invalid_modules)}")
-            print(f"Valid modules: {', '.join(sorted(MODULES.keys()))}")
-            modules_filter = [m for m in modules_filter if m in MODULES]
-            if not modules_filter:
-                sys.exit("Error: No valid modules specified.")
+        # Parse devices filter
+        devices_filter = None
+        if args.devices:
+            devices_filter = [d.strip() for d in args.devices.split(",")]
+            invalid_devices = [d for d in devices_filter if d not in DEVICES]
+            if invalid_devices:
+                print(f"Warning: Invalid devices specified: {', '.join(invalid_devices)}")
+                print(f"Valid devices: {', '.join(sorted(DEVICES.keys()))}")
+                devices_filter = [d for d in devices_filter if d in DEVICES]
+                if not devices_filter:
+                    sys.exit("Error: No valid devices specified.")
 
-    # Parse devices filter
-    devices_filter = None
-    if args.devices:
-        devices_filter = [d.strip() for d in args.devices.split(",")]
-        invalid_devices = [d for d in devices_filter if d not in DEVICES]
-        if invalid_devices:
-            print(f"Warning: Invalid devices specified: {', '.join(invalid_devices)}")
-            print(f"Valid devices: {', '.join(sorted(DEVICES.keys()))}")
-            devices_filter = [d for d in devices_filter if d in DEVICES]
-            if not devices_filter:
-                sys.exit("Error: No valid devices specified.")
-
-    process_modules_and_devices(
-        ref=args.ref,
-        modules_filter=modules_filter,
-        devices_filter=devices_filter,
-        modules_only=args.modules_only,
-        devices_only=args.devices_only,
-        import_method=args.import_method,
-        source_dir=args.source_dir,
-        force=args.force,
-    )
+        process_modules_and_devices(
+            ref=args.ref,
+            modules_filter=modules_filter,
+            devices_filter=devices_filter,
+            modules_only=args.modules_only,
+            devices_only=args.devices_only,
+            import_method=args.import_method,
+            source_dir=args.source_dir,
+            force=args.force,
+            dry_run=args.dry_run,
+            jobs=args.jobs,
+        )
+    finally:
+        if log_file:
+            log_file.close()
+            sys.stdout = sys.__stdout__
+            sys.stderr = sys.__stderr__
 
 
 if __name__ == "__main__":
