@@ -18,8 +18,8 @@ DTB_FILES="${DTB_FILES:-gs101-a0.dtb gs101-b0.dtb}"
 # Toolchain: gcc or clang
 TOOLCHAIN="${TOOLCHAIN:-clang}"
 
-# Clang source: "aosp" (Google prebuilt, default) or "llvm" (kernel.org slim)
-CLANG_SOURCE="${CLANG_SOURCE:-aosp}"
+# Clang source: "aosp" (Google prebuilt) or "llvm" (kernel.org slim, default)
+CLANG_SOURCE="${CLANG_SOURCE:-llvm}"
 
 # AOSP prebuilt clang (used when CLANG_SOURCE=aosp). Pinned name optional (e.g. clang-r614150)
 CLANG_PREBUILT_BASE="${CLANG_PREBUILT_BASE:-https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86}"
