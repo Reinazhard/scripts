@@ -89,12 +89,38 @@ format_duration() {
 }
 
 http_get() {
-    curl -fsSL --connect-timeout 5 "$1" 2>/dev/null
+    # Upstream (android.googlesource.com) returns transient 503/429 on cold/first hit.
+    # Retry with backoff so a flaky response does not abort the build.
+    local url="$1" attempt=1 delay=3
+    while [ "${attempt}" -le 3 ]; do
+        if curl -fsSL --connect-timeout 5 --max-time 60 "${url}" 2>/dev/null; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        if [ "${attempt}" -le 3 ]; then
+            warn "Request failed (${url}), retrying in ${delay}s..."
+            sleep "${delay}"
+            delay=$((delay * 2))
+        fi
+    done
+    return 1
 }
 
 http_download() {
-    local out="$1" url="$2"
-    curl -fsSL --connect-timeout 10 -o "${out}" "${url}"
+    local out="$1" url="$2" attempt=1 delay=5
+    while [ "${attempt}" -le 3 ]; do
+        if curl -fsSL --connect-timeout 10 -o "${out}" "${url}"; then
+            return 0
+        fi
+        rm -f "${out}"
+        attempt=$((attempt + 1))
+        if [ "${attempt}" -le 3 ]; then
+            warn "Download failed (${url}), retrying in ${delay}s..."
+            sleep "${delay}"
+            delay=$((delay * 2))
+        fi
+    done
+    return 1
 }
 
 verify_archive_hash() {
@@ -169,6 +195,8 @@ AK3_IMAGE="${AK3_DIR}/${KERNEL_IMAGE}"
 AK3_DTB="${AK3_DIR}/dtb"
 AK3_DTBO="${AK3_DIR}/dtbo.img"
 BUILD_DURATION=0
+# Default so the EXIT trap can report a failure before setup_environment assigns it
+KERNEL_BUILD_NUM="${KERNEL_BUILD_NUM:-1}"
 
 #==============================================================================
 # Local resource discovery & compiler fallbacks
@@ -412,6 +440,40 @@ fetch_gcc_toolchain() {
     msg "GCC toolchain installed: ${gcc_dir}"
 }
 
+# Latest clang-rNNNNNN dir in the prebuilt branch.
+# Primary: gitiles directory listing. Fallback: git protocol (blobless partial clone,
+# ~1.3MB) because gitiles web is rate-limited/503 far more often than git-upload-pack.
+discover_aosp_clang_name() {
+    local name=""
+
+    name=$(http_get "${CLANG_PREBUILT_BASE}/+/${CLANG_PREBUILT_BRANCH}" \
+        | grep -oE 'clang-r[0-9]+' \
+        | sed 's/^clang-//' \
+        | sort -V \
+        | tail -n1 || true)
+    [ -n "${name}" ] && echo "clang-${name}" && return 0
+
+    if command -v git >/dev/null 2>&1; then
+        warn "Gitiles listing unavailable, discovering via git protocol..."
+        local branch="${CLANG_PREBUILT_BRANCH##*/}"
+        local tmp_git="${TOOLCHAIN_CACHE_DIR}/.clang-ls-tree"
+        mkdir -p "${TOOLCHAIN_CACHE_DIR}"
+        rm -rf "${tmp_git}"
+        if git clone --filter=blob:none --no-checkout --depth 1 \
+            -b "${branch}" "${CLANG_PREBUILT_BASE}" "${tmp_git}" >/dev/null 2>&1; then
+            name=$(git -C "${tmp_git}" ls-tree --name-only HEAD \
+                | grep -oE '^clang-r[0-9]+$' \
+                | sed 's/^clang-//' \
+                | sort -V \
+                | tail -n1 || true)
+        fi
+        rm -rf "${tmp_git}"
+        [ -n "${name}" ] && echo "clang-${name}" && return 0
+    fi
+
+    return 1
+}
+
 fetch_aosp_clang() {
     if resolve_custom_clang; then
         msg "Using specified Clang toolchain: ${CLANG_TOOLCHAIN_DIR}"
@@ -428,12 +490,11 @@ fetch_aosp_clang() {
     local clang_name="${CLANG_PREBUILT_NAME:-}"
     if [ -z "${clang_name}" ]; then
         msg "Discovering latest AOSP Clang prebuilt..."
-        clang_name=$(http_get "${CLANG_PREBUILT_BASE}/+/${CLANG_PREBUILT_BRANCH}" \
-            | grep -oE 'clang-[r0-9]+[0-9]' \
-            | sed 's/^clang-//' \
-            | sort -V \
-            | tail -n1 || true)
-        [ -n "${clang_name}" ] && clang_name="clang-${clang_name}" && msg "Latest AOSP Clang: ${clang_name}"
+        if clang_name=$(discover_aosp_clang_name); then
+            msg "Latest AOSP Clang: ${clang_name}"
+        else
+            clang_name=""
+        fi
     fi
 
     if [ -z "${clang_name}" ]; then
@@ -675,7 +736,7 @@ tg_post_build() {
 
 tg_notify_failure() {
     local variant="$1" reason="$2"
-    local label="Build #${KERNEL_BUILD_NUM}"
+    local label="Build #${KERNEL_BUILD_NUM:-0}"
     [ "${IS_RELEASE}" = "1" ] && label="Release"
     tg_post_msg "<b>❌ ${variant} ${label} failed: ${reason}</b>"
 }
