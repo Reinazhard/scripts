@@ -1,17 +1,22 @@
 """
-Import Android kernel modules and devices.
+Import Android kernel modules and devices for the gs101 family.
 
-This script imports Google-specific kernel modules and device trees from AOSP
-repositories using git subtree, or copies them from local directories.
+This script imports the Google kernel modules and device trees needed to build
+the gs101 family (Pixel 6 / 6 Pro / 6a) from AOSP repositories using git
+subtree, or copies them from local directories.
+
+The module set is the union of every //private/google-modules package referenced
+by the gs101, raviole and bluejay device BUILD.bazel files -- raviole and
+bluejay are the devices built on gs101 and each contribute their own modules.
 
 Usage:
-    # Import from AOSP using git subtree
+    # Import everything for the gs101 family from AOSP using git subtree
     python add_subtree.py android-gs-raviole-6.1-android16
 
-    # Import specific modules
+    # Import only specific modules
     python add_subtree.py main --modules amplifiers,gpu
 
-    # Import from local directory
+    # Import from a local directory
     python add_subtree.py --import-method copy --source-dir /path/to/extracted/private
 
     # Dry run (preview without executing)
@@ -19,6 +24,9 @@ Usage:
 
     # Parallel import with 4 workers
     python add_subtree.py main -j 4
+
+    # List what can be imported
+    python add_subtree.py --list-all
 
 See LICENSE file for copyright and license details.
 """
@@ -33,32 +41,69 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Tuple
 from urllib.parse import urljoin
 
-# Module definitions with their respective repositories
+# Module definitions with their respective repositories.
+#
+# This script targets the gs101 family only: the modules listed here are the
+# union of every //private/google-modules package referenced by the gs101,
+# raviole and bluejay device BUILD.bazel files.  gs101 is the shared SoC base;
+# raviole (Pixel 6/6 Pro) and bluejay (Pixel 6a) are the devices built on it and
+# each add their own modules (cs35l41/drv2624 amplifiers, bluetooth, nfc, uwb,
+# wlan/bcmdhd, ...), so the set spans all three.
+#
+# Keys are local package paths; values are the AOSP repo that carries them.
+# A subpackage shares the repo of its parent (e.g. "aoc/alsa" -> aoc,
+# "gpu/mali_pixel" -> gpu), so several keys may map to one repo.  The finer
+# grained keys are what the device BUILD.bazel files actually reference.
 MODULES = {
     "amplifiers": "kernel/google-modules/amplifiers",
+    "amplifiers/audiometrics": "kernel/google-modules/amplifiers",
+    "amplifiers/cs35l41": "kernel/google-modules/amplifiers",
+    "amplifiers/cs40l25": "kernel/google-modules/amplifiers",
+    "amplifiers/cs40l26": "kernel/google-modules/amplifiers",
+    "amplifiers/drv2624": "kernel/google-modules/amplifiers",
+    "amplifiers/snd_soc_wm_adsp": "kernel/google-modules/amplifiers",
     "aoc": "kernel/google-modules/aoc",
+    "aoc/alsa": "kernel/google-modules/aoc",
+    "aoc/usb": "kernel/google-modules/aoc",
     "aoc_ipc": "kernel/google-modules/aoc-ipc",
     "bms": "kernel/google-modules/bms",
+    "bms/misc": "kernel/google-modules/bms",
     "bluetooth/broadcom": "kernel/google-modules/bluetooth/broadcom",
     "display/common": "kernel/google-modules/display/common",
+    "display/common/gs_drm": "kernel/google-modules/display/common",
+    "display/common/gs_panel": "kernel/google-modules/display/common",
     "display/samsung": "kernel/google-modules/display/samsung",
     "edgetpu/abrolhos": "kernel/google-modules/edgetpu/abrolhos",
+    "edgetpu/abrolhos/drivers/edgetpu": "kernel/google-modules/edgetpu/abrolhos",
     "fingerprint/goodix": "kernel/google-modules/fingerprint/goodix",
+    "fingerprint/goodix/fps_touch_handler":
+        "kernel/google-modules/fingerprint/goodix",
+    "fingerprint/goodix/gw9608": "kernel/google-modules/fingerprint/goodix",
     "gps/broadcom/bcm47765": "kernel/google-modules/gps/broadcom/bcm47765",
     "gpu": "kernel/google-modules/gpu",
+    "gpu/borr_mali_kbase": "kernel/google-modules/gpu",
+    "gpu/mali_pixel": "kernel/google-modules/gpu",
     "lwis": "kernel/google-modules/lwis",
+    "misc": "kernel/google-modules/misc",
+    "misc/sscoredump": "kernel/google-modules/misc",
     "nfc": "kernel/google-modules/nfc",
+    "perf": "kernel/google-modules/perf",
     "power/mitigation": "kernel/google-modules/power/mitigation",
     "power/reset": "kernel/google-modules/power/reset",
     "soc/gs": "kernel/google-modules/soc/gs",
+    "soc/gs/drivers/block/zram": "kernel/google-modules/soc/gs",
+    "soc/gs/drivers/misc/sscoredump": "kernel/google-modules/soc/gs",
+    "soc/gs/drivers/soc/google/eh": "kernel/google-modules/soc/gs",
+    "soc/gs/drivers/soc/google/gsa": "kernel/google-modules/soc/gs",
     "radio/samsung/s5300": "kernel/google-modules/radio/samsung/s5300",
     "touch/common": "kernel/google-modules/touch/common",
     "touch/fts": "kernel/google-modules/touch/fts_touch",
+    "touch/fts/ftm5_legacy": "kernel/google-modules/touch/fts_touch",
     "touch/sec": "kernel/google-modules/touch/sec_touch",
     "trusty": "kernel/google-modules/trusty",
     "uwb/qorvo/dw3000": "kernel/google-modules/uwb/qorvo/dw3000",
     "video/gchips": "kernel/google-modules/video/gchips",
-    "wlan/bcm4389": "kernel/google-modules/wlan/bcmdhd/bcm4389",
+    "wlan/bcmdhd/bcm4389": "kernel/google-modules/wlan/bcmdhd/bcm4389",
 }
 
 # Device definitions with their respective repositories
